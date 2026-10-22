@@ -157,6 +157,25 @@ static bool gSmpWanted = false;
 static class ArmCpu *volatile gPending[ARMCPU_SMP_SLOTS];
 static volatile uint32_t gBootRegistered = 0;
 static bool gRemoteGic = false; // sheng-smp-gic=1: the boot CPU prepares a new core's redistributor before CPU_ON
+// GICv2 (GIC-400, e.g. MediaTek MT8167): memory-mapped CPU interface instead of the GICv3 system registers. Selected by
+// /arm-io/intc compatible "arm,gic-400" or "arm,cortex-a15-gic"; reg holds the distributor and the CPU interface.
+// Register use follows the non-secure GICv2 bring-up of github.com/mouseos/xnu_kernel_benesse_a04br3
+// (pexpert/arm/pe_a04br3_gic.c), which ran on the MT8167 tablet: Group 0 stays with the secure firmware,
+// GICC_CTLR bit 0 enables the non-secure group, SGIs go through GICD_SGIR to the banked GICD_ITARGETSR0 target bit.
+// Built only with ARMCPU_GICV2=1 (CONFIG_XNU_ARMCPU_GICV2=y in the board defconfig). Otherwise gGicV2 is a constant
+// false and every GICv2 branch compiles away, so GICv3 boards build the unchanged driver.
+#ifndef ARMCPU_GICV2
+#define ARMCPU_GICV2 0
+#endif
+#if ARMCPU_GICV2
+static bool gGicV2 = false;
+#else
+static constexpr bool gGicV2 = false;
+#endif
+static OSSharedPtr<IOMemoryMap> gCpuIfMap;
+static uintptr_t gCpuIf = 0;
+static const uint32_t kGicV2IpiSgi = 1;     // SGI used for IPIs on GICv2 (as in the MT8167 port)
+static volatile uint32_t gV2Targets[ARMCPU_SMP_SLOTS];
 
 // Shared peripheral interrupts (GICv3 SPIs, INTID 32..1019). A driver attaches a handler for one INTID; the line is set to
 // Group 1 non-secure, priority 0xa0, the given trigger and routed to the boot CPU (GICD_IROUTER, affinity routing is on),
@@ -207,10 +226,14 @@ bool ArmCpu::mapGic (void)
   OSData *compatible = OSDynamicCast (OSData, gic->getProperty ("compatible"));
   uint64_t bus[3];
   uint64_t regions[4];
+  bool v2 = ARMCPU_GICV2 && (compatible != nullptr) &&
+            (((compatible->getLength () >= 12) && (memcmp (compatible->getBytesNoCopy (), "arm,gic-400", 12) == 0)) ||
+             ((compatible->getLength () >= 19) && (memcmp (compatible->getBytesNoCopy (), "arm,cortex-a15-gic", 19) == 0)));
   bool valid = (ranges != nullptr) && (ranges->getLength () == sizeof (bus)) &&
                (reg != nullptr) && (reg->getLength () == sizeof (regions)) &&
-               (compatible != nullptr) && (compatible->getLength () == 11) &&
-               (memcmp (compatible->getBytesNoCopy (), "arm,gic-v3", 11) == 0);
+               (compatible != nullptr) &&
+               (v2 || ((compatible->getLength () == 11) &&
+                       (memcmp (compatible->getBytesNoCopy (), "arm,gic-v3", 11) == 0)));
   if (valid) {
     memcpy (bus, ranges->getBytesNoCopy (), sizeof (bus));
     memcpy (regions, reg->getBytesNoCopy (), sizeof (regions));
@@ -223,7 +246,13 @@ bool ArmCpu::mapGic (void)
   armcpu_gic_stride = static_cast<uint32_t> (gRedistStride);
   soc->release ();
   gic->release ();
-  if (!valid || (regions[1] < 0x10000) || (regions[3] < 0x20000)) {
+  if (!valid) {
+    return false;
+  }
+  if (!v2 && ((regions[1] < 0x10000) || (regions[3] < 0x20000))) {
+    return false;
+  }
+  if (v2 && ((regions[1] < 0x1000) || (regions[3] < 0x1000))) {
     return false;
   }
   for (unsigned index = 0; index < 4; index += 2) {
@@ -246,6 +275,21 @@ bool ArmCpu::mapGic (void)
     return false;
   }
   dist = static_cast<uintptr_t> (distributor->getVirtualAddress ());
+  if (v2) {
+    // GICv2: the second region is the CPU interface (GICC). No redistributors.
+#if ARMCPU_GICV2
+    gGicV2 = true;
+#endif
+    gCpuIf = static_cast<uintptr_t> (redistributors->getVirtualAddress ());
+    gCpuIfMap = redistributors;
+    redistBase = 0;
+    redistSize = 0;
+    gDistMap = distributor;
+    gDist = dist;
+    gFrames = 0;
+    gFramesSize = 0;
+    return true;
+  }
   if (((read32 (dist, 0xffe8) >> 4) & 15) != 3) {
     return false;
   }
@@ -261,6 +305,14 @@ bool ArmCpu::mapGic (void)
 
 bool ArmCpu::initDistributor (void)
 {
+  if (gGicV2) {
+    // Disable the inherited non-secure SPIs until their drivers attach; secure Group 0 enables are RAZ/WI here.
+    unsigned interrupts = ((read32 (dist, 4) & 31) + 1) * 32;
+    for (unsigned id = 32; id < interrupts && id < 1020; id += 32) {
+      write32 (dist, 0x180 + id / 8, 0xffffffff);
+    }
+    return true;
+  }
   uint32_t ctl = read32 (dist, 0);
   write32 (dist, 0, ctl & ~3U);
   if (!waitClear (dist, 0, 1U << 31)) { return false; }
@@ -276,6 +328,10 @@ bool ArmCpu::initDistributor (void)
 // Runs on the core whose redistributor is configured: the frame is selected by that core's own MPIDR affinity.
 bool ArmCpu::wakeRedistributor (bool local)
 {
+  if (gGicV2) {
+    if (local) { __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (affinity)); }
+    return true;
+  }
   uintptr_t frames = redistBase;
   // local: this core finds its own frame from MPIDR. Remote: the boot CPU prepares a not-yet-started core's frame
   // from the DT affinity, so the new core never needs GIC MMIO of its own.
@@ -318,6 +374,36 @@ bool ArmCpu::prepareGic (void)
 
 void ArmCpu::enableGic (void)
 {
+  if (gGicV2) {
+    // Banked per-core state: this core's distributor target bit, SGI/PPI enables and the CPU interface.
+    uint32_t target = read32 (dist, 0x800) & 0xff;
+    if ((target == 0) || ((target & (target - 1)) != 0)) { panic ("ArmCpu: invalid GICv2 CPU target mask 0x%x", target); }
+    __atomic_store_n (&gV2Targets[logicalId & (ARMCPU_SMP_SLOTS - 1)], target, __ATOMIC_RELEASE);
+    if (!secondary) { gBootAffinity = target; }
+    write32 (dist, 0x180, 0xffffffff);                       // ICENABLER0: SGIs/PPIs off while configured
+    write32 (dist, 0x280, 1U << 27);                         // ICPENDR0: drop a stale timer PPI
+    const uint32_t ids[2] = {27, kGicV2IpiSgi};
+    for (unsigned i = 0; i < 2; i++) {
+      const unsigned offset = 0x400 + (ids[i] & ~3U), shift = (ids[i] & 3U) * 8;
+      write32 (dist, offset, (read32 (dist, offset) & ~(0xffU << shift)) | (0xa0U << shift));
+    }
+    write32 (dist, 0x100, (1U << 27) | (1U << kGicV2IpiSgi)); // ISENABLER0
+    write32 (gCpuIf, 4, 0xff);                               // GICC_PMR
+    write32 (gCpuIf, 8, 0);                                  // GICC_BPR
+    write32 (gCpuIf, 0, (read32 (gCpuIf, 0) & ~(1U << 9)) | 1U); // GICC_CTLR: non-secure group on, EOImode 0
+    write32 (dist, 0, read32 (dist, 0) | 1U);                // GICD_CTLR: non-secure group on
+    __asm__ volatile ("dsb sy; isb" ::: "memory");
+    if (!secondary) {
+      armcpu_gic_boot[0] = target;
+      armcpu_gic_boot[1] = read32 (dist, 0x100);
+      armcpu_gic_boot[2] = read32 (dist, 0);
+      armcpu_gic_boot[3] = read32 (dist, 4);
+      armcpu_gic_boot[4] = read32 (gCpuIf, 0);
+      armcpu_gic_boot[5] = read32 (gCpuIf, 4);
+    }
+    armcpu_gic_ready = 1;
+    return;
+  }
   uint64_t value;
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   value |= 1;
@@ -561,7 +647,17 @@ void ArmCpu::interrupt (void)
   for (;;) {
     armcpu_irq_phase=1;
     uint64_t id;
-    __asm__ volatile ("mrs %0, icc_iar1_el1" : "=r" (id));
+    uint32_t v2Raw = 0;
+    if (gGicV2) {
+      // GICC_IAR: INTID in bits 0..9, the SGI source CPU in bits 10..12. Classify by INTID only (the IPI SGI is
+      // presented as INTID 0, the value the GICv3 path uses) and EOI with the raw value.
+      v2Raw = read32 (gCpuIf, 0x0c);
+      const uint32_t intid = v2Raw & 0x3ff;
+      if (intid >= 1020) { armcpu_irq_phase = 0; break; }
+      id = (intid == kGicV2IpiSgi) ? 0 : intid;
+    } else {
+      __asm__ volatile ("mrs %0, icc_iar1_el1" : "=r" (id));
+    }
     armcpu_irq_id=static_cast<uint32_t>(id & 0xffffff);
     if ((id & 0xffffff) >= 1020) { armcpu_irq_phase=0;break; }
     if(diagnosePower && ++drained>128)panic("ArmCpu: IRQ drain exceeds 128 id=%llx timer=%llu IPI=%llu",id,armcpu_timer_interrupts,armcpu_ipi_interrupts);
@@ -603,7 +699,13 @@ void ArmCpu::interrupt (void)
       }
     }
     armcpu_irq_phase=6;
-    __asm__ volatile ("msr icc_eoir1_el1, %0; isb" :: "r" (id) : "memory");
+    if (gGicV2) {
+      __asm__ volatile ("dsb ish" ::: "memory");
+      write32 (gCpuIf, 0x10, v2Raw);                        // GICC_EOIR with the acknowledged value (source CPU kept)
+      __asm__ volatile ("isb" ::: "memory");
+    } else {
+      __asm__ volatile ("msr icc_eoir1_el1, %0; isb" :: "r" (id) : "memory");
+    }
   }
 }
 
@@ -617,6 +719,14 @@ void ArmCpu::signalCPU (IOCPU *target)
   uint64_t sgi = ((aff & 0xff00000000ULL) << 16) | ((aff & 0xff0000) << 16) |
                  ((aff & 0xff00) << 8) | (1ULL << (aff & 0xff));
   armcpu_ipi_sent = armcpu_ipi_sent + 1;
+  if (gGicV2) {
+    uint32_t target = __atomic_load_n (&gV2Targets[peer->logicalId & (ARMCPU_SMP_SLOTS - 1)], __ATOMIC_ACQUIRE);
+    if (target == 0) { panic ("ArmCpu: GICv2 CPU target not initialized"); }
+    __asm__ volatile ("dsb ishst" ::: "memory");
+    write32 (gDist, 0xf00, (target << 16) | kGicV2IpiSgi);  // GICD_SGIR, target list filter
+    __asm__ volatile ("isb" ::: "memory");
+    return;
+  }
   if (gSpiIpi) { spiIpiSend (gDist, peer->logicalId & 7); return; }
   __asm__ volatile ("dsb ishst; msr icc_sgi1r_el1, %0; isb" :: "r" (sgi) : "memory");
 }
@@ -662,6 +772,7 @@ extern "C" void armcpu_gic_diag (uint64_t aff, uint32_t *out)
 // kernel never sees it. out[8], out[9]: CNTVCT ticks of one ICC_SGI1R_EL1 write and of one ICC_PMR_EL1 read (a trapped write costs far more). out: 0 MPIDR, 1 INTIDs pending as Group 1, 2 INTIDs pending as Group 0, 3 ICC_PMR, 4 ICC_IGRPEN1, 5 ICC_SRE, 6 ICC_CTLR, 7 ICC_RPR.
 extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
 {
+  if (gGicV2) { for (unsigned i = 0; i < 10; i++) { out[i] = 0; } return; } // GICv3 system-register probe only
   uint64_t mpidr, daif, v;
   __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (mpidr));
   __asm__ volatile ("mrs %0, daif; msr daifset, #2; isb" : "=r" (daif) :: "memory");
@@ -714,6 +825,7 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
 
 extern "C" void armcpu_ipi_selftest (uint64_t aff)
 {
+  if (gGicV2) { return; } // GICv3 system-register probe only
   uint64_t sgi = ((aff & 0xff00000000ULL) << 16) | ((aff & 0xff0000) << 16) | ((aff & 0xff00) << 8) | (1ULL << (aff & 0xff));
   armcpu_ipi_selftest_sent = armcpu_ipi_selftest_sent + 1;
   if (gSpiIpi) { spiIpiSend (gDist, static_cast<uint32_t> ((aff >> 8) & 7)); return; }
@@ -731,6 +843,11 @@ void ArmCpu::quiesceCPU (void)
   armcpu_quiesce_calls=armcpu_quiesce_calls+1;
   if(diagnosePower)panic("ArmCpu: unsupported quiesce requested before timer/GIC disable caller=%p halt=%u timer=%llu phase=%u",__builtin_return_address(0),armcpu_halt_calls,armcpu_timer_interrupts,armcpu_irq_phase);
   enableCPUTimeBase (false);
+  if (gGicV2) {
+    write32 (gCpuIf, 0, read32 (gCpuIf, 0) & ~1U);
+    __asm__ volatile ("dsb sy; isb" ::: "memory");
+    return;
+  }
   uint64_t value = 0;
   __asm__ volatile ("msr icc_igrpen1_el1, %0; dsb sy; isb" :: "r" (value) : "memory");
 }
@@ -794,12 +911,16 @@ extern "C" IOReturn armcpu_spi_attach (uint32_t intid, bool edge, void (*handler
   if (used >= ARMCPU_SPI_SLOTS) { return kIOReturnNoResources; }
   const uint32_t word = (intid / 32) * 4, bit = 1U << (intid % 32);
   write32 (gDist, 0x180 + word, bit); // ICENABLER while it is reconfigured
-  if (!waitClear (gDist, 0, 1U << 31)) { return kIOReturnTimeout; }
+  if (!gGicV2 && !waitClear (gDist, 0, 1U << 31)) { return kIOReturnTimeout; }
   write32 (gDist, 0x80 + word, read32 (gDist, 0x80 + word) | bit); // IGROUPR: group 1 (RAZ/WI if secure owns it)
   *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid) = 0xa0;
   const unsigned cfg = 0xc00 + (intid / 16) * 4, shift = (intid % 16) * 2 + 1;
   write32 (gDist, cfg, (read32 (gDist, cfg) & ~(1U << shift)) | ((edge ? 1U : 0U) << shift));
-  *reinterpret_cast<volatile uint64_t *> (gDist + 0x6000 + 8 * intid) = gBootAffinity;
+  if (gGicV2) {
+    *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid) = static_cast<uint8_t> (gBootAffinity); // GICD_ITARGETSR
+  } else {
+    *reinterpret_cast<volatile uint64_t *> (gDist + 0x6000 + 8 * intid) = gBootAffinity;
+  }
   gSpi[used] = {intid, handler, context, 0};
   __atomic_store_n (&gSpiUsed, used + 1, __ATOMIC_RELEASE);
   __asm__ volatile ("dsb sy" ::: "memory");
@@ -809,7 +930,10 @@ extern "C" IOReturn armcpu_spi_attach (uint32_t intid, bool edge, void (*handler
                 (((read32 (gDist, cfg) >> shift) & 1U) << 2) |
                 (static_cast<uint32_t> (*reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid)) << 8);
   }
-  if (router != nullptr) { *router = *reinterpret_cast<volatile uint64_t *> (gDist + 0x6000 + 8 * intid); }
+  if (router != nullptr) {
+    *router = gGicV2 ? *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid)
+                     : *reinterpret_cast<volatile uint64_t *> (gDist + 0x6000 + 8 * intid);
+  }
   return kIOReturnSuccess;
 }
 
