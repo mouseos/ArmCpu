@@ -28,6 +28,8 @@ volatile uint64_t armcpu_ipi_sent = 0;       // SGIs the kernel asked ArmCpu::si
 volatile uint64_t armcpu_ipi_selftest_sent = 0;
 // Boot core's own GIC registers read back once after enabling (own frame, the same one just written): 0 IGROUPR0, 1 ISENABLER0, 2 GICD_CTLR,
 // 3 GICD_TYPER, 4 IGRPMODR0, 5 ICC_PMR_EL1, 6 ICC_IGRPEN1_EL1, 7 ICC_SRE_EL1.
+// GICv2: 0 this core's GICD_ITARGETSR0 target bit, 1 GICD_ISENABLER0, 2 GICD_CTLR, 3 GICD_TYPER, 4 GICC_CTLR, 5 GICC_PMR,
+// 6 GICD_PIDR2, 7 GICC_IIDR.
 volatile uint32_t armcpu_gic_boot[8];
 volatile uint32_t armcpu_core_timer[8], armcpu_core_sgi[8];   // per logical core: architectural timer interrupts and SGI 0 taken
 static bool gSpiIpi = false;                // boot-arg armcpu-spi-ipi=1: IPIs are software-pended SPIs 1008+core routed to that core (ICC_SGI1R_EL1 generates nothing on this board)
@@ -176,6 +178,32 @@ static OSSharedPtr<IOMemoryMap> gCpuIfMap;
 static uintptr_t gCpuIf = 0;
 static const uint32_t kGicV2IpiSgi = 1;     // SGI used for IPIs on GICv2 (as in the MT8167 port)
 static volatile uint32_t gV2Targets[ARMCPU_SMP_SLOTS];
+#if ARMCPU_GICV2
+// Secondary-core entry for GICv2 boards (assembly at the end of this file), and the kernel globals start_cpu reads with
+// the MMU and caches still off (Darwin 23 osfmk/arm64/start.s: TCR from sysreg_restore, TTBR from cpu_ttep).
+extern "C" char armcpu_gicv2_secondary_entry[];
+static const size_t kGicV2EntryBytes = 0x100;   // the trampoline is 256-byte aligned and shorter than this (35 instructions)
+extern "C" char sysreg_restore[];
+extern "C" uint64_t cpu_ttep;
+#endif
+
+// True when the NUL-separated compatible string list contains name as one complete entry.
+static bool compatibleHas (OSData *compatible, const char *name)
+{
+  if (compatible == nullptr) { return false; }
+  const char *bytes = static_cast<const char *> (compatible->getBytesNoCopy ());
+  const unsigned length = compatible->getLength ();
+  unsigned want = 0;
+  while (name[want] != 0) { want++; }
+  for (unsigned at = 0; at < length;) {
+    unsigned entry = 0;
+    while (at + entry < length && bytes[at + entry] != 0) { entry++; }
+    if (at + entry == length) { return false; }   // last entry without its NUL
+    if (entry == want && memcmp (bytes + at, name, want) == 0) { return true; }
+    at += entry + 1;
+  }
+  return false;
+}
 
 // Shared peripheral interrupts (GICv3 SPIs, INTID 32..1019). A driver attaches a handler for one INTID; the line is set to
 // Group 1 non-secure, priority 0xa0, the given trigger and routed to the boot CPU (GICD_IROUTER, affinity routing is on),
@@ -226,11 +254,13 @@ bool ArmCpu::mapGic (void)
   OSData *compatible = OSDynamicCast (OSData, gic->getProperty ("compatible"));
   uint64_t bus[3];
   uint64_t regions[4];
-  bool v2 = ARMCPU_GICV2 && (compatible != nullptr) &&
-            (((compatible->getLength () >= 12) && (memcmp (compatible->getBytesNoCopy (), "arm,gic-400", 12) == 0)) ||
-             ((compatible->getLength () >= 19) && (memcmp (compatible->getBytesNoCopy (), "arm,cortex-a15-gic", 19) == 0)));
+  bool v2 = ARMCPU_GICV2 && (compatibleHas (compatible, "arm,gic-400") || compatibleHas (compatible, "arm,cortex-a15-gic"));
+  // GICv3: exactly distributor + redistributors. GICv2: GICD, GICC, optionally followed by GICH and GICV as in the
+  // MT8167 DTS (interrupt-controller@10310000 lists four regions); only the first two are used.
   bool valid = (ranges != nullptr) && (ranges->getLength () == sizeof (bus)) &&
-               (reg != nullptr) && (reg->getLength () == sizeof (regions)) &&
+               (reg != nullptr) &&
+               (v2 ? (reg->getLength () >= sizeof (regions) && (reg->getLength () % (2 * sizeof (uint64_t))) == 0)
+                   : (reg->getLength () == sizeof (regions))) &&
                (compatible != nullptr) &&
                (v2 || ((compatible->getLength () == 11) &&
                        (memcmp (compatible->getBytesNoCopy (), "arm,gic-v3", 11) == 0)));
@@ -277,6 +307,10 @@ bool ArmCpu::mapGic (void)
   dist = static_cast<uintptr_t> (distributor->getVirtualAddress ());
   if (v2) {
     // GICv2: the second region is the CPU interface (GICC). No redistributors.
+    // GICD_PIDR2 ArchRev (bits 7:4) is 2 for GICv2 (GIC-400 TRM: GICD_PIDR2 = 0x2b); anything else is a wrong mapping.
+    if (((read32 (dist, 0xfe8) >> 4) & 15) != 2) {
+      return false;
+    }
 #if ARMCPU_GICV2
     gGicV2 = true;
 #endif
@@ -400,6 +434,8 @@ void ArmCpu::enableGic (void)
       armcpu_gic_boot[3] = read32 (dist, 4);
       armcpu_gic_boot[4] = read32 (gCpuIf, 0);
       armcpu_gic_boot[5] = read32 (gCpuIf, 4);
+      armcpu_gic_boot[6] = read32 (dist, 0xfe8);
+      armcpu_gic_boot[7] = read32 (gCpuIf, 0xfc);
     }
     armcpu_gic_ready = 1;
     return;
@@ -448,7 +484,7 @@ bool ArmCpu::start (IOService *provider)
   PE_parse_boot_argn ("armcpu-skip-gic", &skip, sizeof (skip));
   skipGic = skip != 0;
   unsigned selfIpi = 0;
-  PE_parse_boot_argn ("armcpu-self-ipi", &selfIpi, sizeof (selfIpi));
+  const bool selfIpiGiven = PE_parse_boot_argn ("armcpu-self-ipi", &selfIpi, sizeof (selfIpi));
   gSelfIpi = selfIpi == 1;
   unsigned spiIpi = 0;
   PE_parse_boot_argn ("armcpu-spi-ipi", &spiIpi, sizeof (spiIpi));
@@ -477,6 +513,14 @@ bool ArmCpu::start (IOService *provider)
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (bootMpidr));
     armcpu_boot_mpidr = static_cast<uint32_t> (bootMpidr);
     if ((!skipGic && !prepareGic ()) || !IOCPU::start (provider)) { return false; }
+    if (gGicV2) {
+      // armcpu-spi-ipi uses GICD_IROUTER and INTIDs 1008+, which GICv2 does not have (GICD is a single 4 KiB frame).
+      gSpiIpi = false;
+      // XNU keeps a core's SIGPdisabled set, and cpu_signal() skips that core, until it takes its first IPI. The
+      // MT8167 port sends every core a self SGI from initCPU (fee5652); on GICv2 that is the default and
+      // armcpu-self-ipi=0 turns it off.
+      if (!selfIpiGiven) { gSelfIpi = true; }
+    }
   }
   cpuName = OSSymbol::withCStringNoCopy ("ARM architectural boot CPU");
   if (cpuName == nullptr) { return false; }
@@ -886,6 +930,17 @@ kern_return_t ArmCpu::startCPU (vm_offset_t, vm_offset_t)
   cleanToMemory (LowResetVectorBase, 0x10000);   // reset vector, start_cpu and the code up to the MMU enable
   cleanToMemory (ResetHandlerData, 0x1000);
   cleanToMemory (const_boot_args, 0x1000);
+#if ARMCPU_GICV2
+  if (gGicV2) {
+    // The MT8167 Trusted Firmware can start the core at EL2, while LowResetVectorBase expects EL1: enter through the
+    // EL2-to-EL1 trampoline below, which branches to LowResetVectorBase. start_cpu also reads TCR and the kernel TTBR
+    // with caches off; the MT8167 port writes both back before CPU_ON (fee5652, after ios-sweet patch 0065).
+    entry = static_cast<uint64_t> (ml_static_vtop (reinterpret_cast<vm_offset_t> (armcpu_gicv2_secondary_entry)));
+    cleanToMemory (armcpu_gicv2_secondary_entry, kGicV2EntryBytes);
+    cleanToMemory (sysreg_restore, sizeof (uint64_t));
+    cleanToMemory (&cpu_ttep, sizeof (cpu_ttep));
+  }
+#endif
   armcpu_smp_step[logicalId] = 4;
   int64_t result = psciCall (hvc, 0xc4000003ULL, affinity & 0xff00ffffffULL, entry, 0);
   armcpu_smp_psci_rc[logicalId] = static_cast<int32_t> (result);
@@ -945,3 +1000,56 @@ extern "C" uint64_t armcpu_spi_count (uint32_t intid)
   }
   return 0;
 }
+
+#if ARMCPU_GICV2
+// PSCI CPU_ON entry of a GICv2 (MT8167) secondary core. It runs at its physical address with the MMU off. From EL2 it
+// selects AArch64 EL1 with no stage 2 and no EL2 traps, gives EL1 the physical counter and timer, sets CNTVOFF_EL2 to 0
+// and erets to EL1h with DAIF masked; from EL1 it continues directly. It then enters LowResetVectorBase, which selects
+// the CPU data by MPIDR (the PSCI context id in x0 is unused). Sequence from a04br3_secondary_entry of the A04BR3 XNU
+// port (mouseos/xnu_kernel_benesse_a04br3 fee5652, osfmk/arm64/start.s), which brought up all four MT8167 cores.
+// CPTR_EL2 is written with its ARMv8.0 RES1 bits and MDCR_EL2.HPMN with PMCR_EL0.N (as Linux init_el2_state does).
+// No GICv3 system register is touched: GIC-400 has no system register interface.
+__asm__ (
+  "  .text\n"
+  "  .p2align 8\n"
+  "  .globl _armcpu_gicv2_secondary_entry\n"
+  "_armcpu_gicv2_secondary_entry:\n"
+  "  msr DAIFSet, #0xf\n"
+  "  mrs x1, CurrentEL\n"
+  "  cmp x1, #0x4\n"                          // EL1
+  "  b.eq Larmcpu_gicv2_el1\n"
+  "  cmp x1, #0x8\n"                          // EL2
+  "  b.ne Larmcpu_gicv2_bad_el\n"
+  "  adrp x1, _LowExceptionVectorBase@PAGE\n"
+  "  add x1, x1, _LowExceptionVectorBase@PAGEOFF\n"
+  "  msr VBAR_EL2, x1\n"
+  "  mov x1, #0x80000000\n"                   // HCR_EL2: RW (EL1 is AArch64), nothing else
+  "  msr HCR_EL2, x1\n"
+  "  msr VTTBR_EL2, xzr\n"
+  "  mov x1, #0x33ff\n"                       // CPTR_EL2: RES1 bits 13:12 and 9:0, TFP/TTA/TCPAC clear
+  "  msr CPTR_EL2, x1\n"
+  "  mrs x1, PMCR_EL0\n"
+  "  ubfx x1, x1, #11, #5\n"                  // MDCR_EL2.HPMN = PMCR_EL0.N, no debug or PMU traps
+  "  msr MDCR_EL2, x1\n"
+  "  mov x1, #3\n"                            // CNTHCTL_EL2: EL1PCTEN | EL1PCEN
+  "  msr CNTHCTL_EL2, x1\n"
+  "  msr CNTVOFF_EL2, xzr\n"
+  "  mov x1, #0x0800\n"
+  "  movk x1, #0x30d0, lsl #16\n"             // SCTLR_EL1 0x30d00800: ARMv8.0 RES1 bits, MMU and caches off, little endian
+  "  msr SCTLR_EL1, x1\n"
+  "  isb\n"
+  "  adr x1, Larmcpu_gicv2_el1\n"
+  "  msr ELR_EL2, x1\n"
+  "  mov x1, #0x3c5\n"                        // SPSR_EL2: D, A, I, F masked, EL1h
+  "  msr SPSR_EL2, x1\n"
+  "  eret\n"
+  "Larmcpu_gicv2_bad_el:\n"
+  "  wfe\n"
+  "  b Larmcpu_gicv2_bad_el\n"
+  "Larmcpu_gicv2_el1:\n"
+  "  msr SPSel, #1\n"
+  "  adrp x1, _LowResetVectorBase@PAGE\n"
+  "  add x1, x1, _LowResetVectorBase@PAGEOFF\n"
+  "  br x1\n"
+);
+#endif
