@@ -26,6 +26,7 @@ volatile uint64_t armcpu_timer_interrupts = 0;
 volatile uint64_t armcpu_ipi_interrupts = 0;
 volatile uint64_t armcpu_ipi_sent = 0;       // SGIs the kernel asked ArmCpu::signalCPU to send
 volatile uint64_t armcpu_ipi_selftest_sent = 0;
+volatile uint64_t armcpu_ipi_dropped = 0;       // GICv2: IPIs to a core whose target bit is not known yet
 // Boot core's own GIC registers read back once after enabling (own frame, the same one just written): 0 IGROUPR0, 1 ISENABLER0, 2 GICD_CTLR,
 // 3 GICD_TYPER, 4 IGRPMODR0, 5 ICC_PMR_EL1, 6 ICC_IGRPEN1_EL1, 7 ICC_SRE_EL1.
 // GICv2: 0 this core's GICD_ITARGETSR0 target bit, 1 GICD_ISENABLER0, 2 GICD_CTLR, 3 GICD_TYPER, 4 GICC_CTLR, 5 GICC_PMR,
@@ -765,7 +766,7 @@ void ArmCpu::signalCPU (IOCPU *target)
   armcpu_ipi_sent = armcpu_ipi_sent + 1;
   if (gGicV2) {
     uint32_t target = __atomic_load_n (&gV2Targets[peer->logicalId & (ARMCPU_SMP_SLOTS - 1)], __ATOMIC_ACQUIRE);
-    if (target == 0) { panic ("ArmCpu: GICv2 CPU target not initialized"); }
+    if (target == 0) { armcpu_ipi_dropped = armcpu_ipi_dropped + 1; return; } // core not yet up: count, do not panic
     __asm__ volatile ("dsb ishst" ::: "memory");
     write32 (gDist, 0xf00, (target << 16) | kGicV2IpiSgi);  // GICD_SGIR, target list filter
     __asm__ volatile ("isb" ::: "memory");
@@ -1034,6 +1035,10 @@ __asm__ (
   "  mov x1, #3\n"                            // CNTHCTL_EL2: EL1PCTEN | EL1PCEN
   "  msr CNTHCTL_EL2, x1\n"
   "  msr CNTVOFF_EL2, xzr\n"
+  "  mrs x1, MIDR_EL1\n"                       // EL1 reads of MIDR/MPIDR return VPIDR_EL2/VMPIDR_EL2, which reset UNKNOWN:
+  "  msr VPIDR_EL2, x1\n"                     // copy the physical values as Linux init_el2 does (start_cpu selects
+  "  mrs x1, MPIDR_EL1\n"                     // this core's cpu_data by MPIDR)
+  "  msr VMPIDR_EL2, x1\n"
   "  mov x1, #0x0800\n"
   "  movk x1, #0x30d0, lsl #16\n"             // SCTLR_EL1 0x30d00800: ARMv8.0 RES1 bits, MMU and caches off, little endian
   "  msr SCTLR_EL1, x1\n"
