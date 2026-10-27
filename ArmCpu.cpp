@@ -9,6 +9,10 @@
 #include <kern/clock.h>
 #include <pexpert/pexpert.h>
 #include "CycleClock.h"
+#include "RuntimeCyclePolicy.h"
+#ifndef ARMCPU_RUNTIME_A04BR3
+#define ARMCPU_RUNTIME_A04BR3 0
+#endif
 
 // Exact private entry from Darwin 23 arm/rtclock.h. Its full data header is
 // not exported to IOKit; the IRQ path calls the real kernel implementation.
@@ -99,7 +103,9 @@ public:
   const OSSymbol *getCPUName (void) override;
 };
 
+#if ARMCPU_RUNTIME_A04BR3
 static void armcpu_runtime_cycle_worker(void *, wait_result_t);
+#endif
 
 OSDefineMetaClassAndStructors (ArmCpu, IOCPU)
 
@@ -577,12 +583,18 @@ bool ArmCpu::start (IOService *provider)
   registerService ();
   __atomic_store_n (&gBootRegistered, 1U, __ATOMIC_RELEASE);
   drainPending ();
+#if ARMCPU_RUNTIME_A04BR3
   unsigned runtimeCycle = 0;
   if (gGicV2 && PE_parse_boot_argn ("armcpu-runtime-cycle", &runtimeCycle, sizeof (runtimeCycle)) && runtimeCycle == 1) {
-    thread_t worker;
-    if (kernel_thread_start (&armcpu_runtime_cycle_worker, nullptr, &worker) == KERN_SUCCESS) thread_deallocate (worker);
-    else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-cycle error=thread-create\n");
+    auto runtimeRoot = IORegistryEntry::fromPath ("/", gIODTPlane);
+    OSData *runtimeCompatible = runtimeRoot ? OSDynamicCast (OSData, runtimeRoot->getProperty ("compatible")) : nullptr;
+    if (runtimeCompatible && armcpu_runtime_is_a04br3 (runtimeCompatible->getBytesNoCopy (), runtimeCompatible->getLength ())) {
+      thread_t worker;
+      if (kernel_thread_start (&armcpu_runtime_cycle_worker, nullptr, &worker) == KERN_SUCCESS) thread_deallocate (worker);
+      else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-cycle error=thread-create\n");
+    } else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-cycle error=board-mismatch\n");
   }
+#endif
   return true;
 }
 
@@ -787,11 +799,9 @@ struct ArmCpuCycleRegisters {
   void disable_cycle() { uint64_t v = 1ULL << 31; __asm__ volatile ("msr pmcntenclr_el0, %0" :: "r" (v) : "memory"); }
   void barrier() { __asm__ volatile ("isb" ::: "memory"); }
 };
+#if ARMCPU_RUNTIME_A04BR3
 #include "RuntimeCycleRunner.h"
 #endif
-
-#if !ARMCPU_GICV2
-static void armcpu_runtime_cycle_worker(void *, wait_result_t) {}
 #endif
 
 void ArmCpu::initCPU (bool boot)
