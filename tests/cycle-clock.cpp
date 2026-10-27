@@ -25,6 +25,8 @@ int main(){
   Fake overflow; overflow.flags=1ULL<<31; assert(armcpu_cycle_sample(overflow).status==3 && !overflow.writes && overflow.flags);
   Fake eventOverflow; eventOverflow.flags=1; assert(armcpu_cycle_sample(eventOverflow).status==3 && !eventOverflow.writes);
   Fake wrap; wrap.cycleStep=0x100000001ULL; auto ws=armcpu_cycle_sample(wrap); assert(ws.status==7 && !ws.cycles && ws.overflowAfter==(1ULL<<31) && !wrap.flags && wrap.counter==123 && wrap.control==8 && !wrap.running);
+  Fake runtime; auto rs=armcpu_cycle_sample(runtime,23400,26000); assert(rs.status==0 && rs.outerTicks<=26000 && runtime.counter==123 && !runtime.running);
+  Fake runtimeLate; runtimeLate.step=14000; assert(armcpu_cycle_sample(runtimeLate,23400,26000).status==6 && runtimeLate.counter==123 && !runtimeLate.running);
   Fake late; late.step=27000; auto ls=armcpu_cycle_sample(late); assert(ls.status==6 && !ls.cycles && late.counter==123 && !late.running);
   Fake backwards; backwards.regressAt=2; auto bs=armcpu_cycle_sample(backwards); assert(bs.status==9 && !bs.ticks && !bs.cycles && bs.beginAfter - bs.beginBefore == UINT64_MAX-2 && bs.badStage==1 && bs.badPrevious==bs.beginBefore && bs.badCurrent==bs.beginAfter && backwards.counter==123 && backwards.control==8 && !backwards.running);
   Fake loopBackwards; loopBackwards.regressAt=3; auto lb=armcpu_cycle_sample(loopBackwards); assert(lb.status==9 && lb.badStage==2 && lb.badPrevious-lb.badCurrent==3 && loopBackwards.counter==123 && !loopBackwards.running);
