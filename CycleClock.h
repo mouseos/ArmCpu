@@ -6,6 +6,25 @@
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
 struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks; unsigned status; };
+
+// Single producer (the secondary) and single consumer (its start thread).
+// Publish only once, after every field including the actual MPIDR is stored.
+struct ArmCpuCycleMailbox {
+  ArmCpuCycleSample sample;
+  uint64_t mpidr;
+  unsigned ready;
+  void publish(const ArmCpuCycleSample &value, uint64_t cpuMpidr) {
+    sample = value;
+    mpidr = cpuMpidr;
+    __atomic_store_n(&ready, 1U, __ATOMIC_RELEASE);
+  }
+  bool read(ArmCpuCycleSample &value, uint64_t &cpuMpidr) const {
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) return false;
+    value = sample;
+    cpuMpidr = mpidr;
+    return true;
+  }
+};
 template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
 {
   ArmCpuCycleSample s = {};

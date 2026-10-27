@@ -2,6 +2,7 @@
 #include <IOKit/IOCPU.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IOLib.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSSymbol.h>
 #include <machine/machine_routines.h>
@@ -63,6 +64,7 @@ class ArmCpu : public IOCPU {
   bool skipGic = false;
   bool diagnosePower = false;
   bool diagnoseCycleClock = false;
+  ArmCpuCycleMailbox cycleMailbox = {};
   bool secondary = false;
   uint32_t logicalId = 0;
   bool mapGic (void);
@@ -633,8 +635,26 @@ void ArmCpu::startThread (void *argument, wait_result_t)
 {
   ArmCpu *self = static_cast<ArmCpu *> (argument);
   armcpu_smp_step[self->logicalId] = 3;
-  // Blocks until the new core reaches the scheduler; a core that never arrives only stalls this helper thread.
-  processor_start (self->machProcessor);
+  kern_return_t result = processor_start (self->machProcessor);
+#if ARMCPU_GICV2
+  // processor_start can return before initCPU runs. Wait only in this helper
+  // thread, with a bound for a core that never reaches or completes sampling.
+  ArmCpuCycleSample sample;
+  uint64_t mpidr;
+  bool ready = false;
+  if (result == KERN_SUCCESS && gGicV2 && self->diagnoseCycleClock && ml_get_interrupts_enabled ()) {
+    for (unsigned attempt = 0; attempt < 500; attempt++) {
+      if ((ready = self->cycleMailbox.read (sample, mpidr))) break;
+      IOSleep (10);
+    }
+    if (!ready) ready = self->cycleMailbox.read (sample, mpidr);
+  }
+  if (ready && ml_get_interrupts_enabled ()) {
+    IOLog("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
+          self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
+  }
+#endif
+  (void) result;
   thread_terminate (current_thread ());
 }
 
@@ -682,8 +702,7 @@ void ArmCpu::initCPU (bool boot)
     if (gGicV2 && diagnoseCycleClock) {
       ArmCpuCycleRegisters registers;
       ArmCpuCycleSample sample = armcpu_cycle_sample(registers);
-      IOLog("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
-            logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
+      cycleMailbox.publish (sample, mpidr);
     }
 #endif
     if (!gRemoteGic && !wakeRedistributor (true)) { armcpu_smp_fail[logicalId] = 2; for (;;) { __asm__ volatile ("wfe"); } }
