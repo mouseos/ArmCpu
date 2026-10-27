@@ -62,11 +62,11 @@ active-cycle frequency in Hz is `cycles * cntfrq / ticks`; it is a roughly
 later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
 3 PMU already enabled, cycle filtering active, or any interrupt or overflow
 flag already set; 4 timer timeout; 5 zero cycles; 6 elapsed time exceeds 2 ms;
-7 cycle-counter overflow; and 8 the sum of the two PMU read brackets
-exceeds 1% of the target interval (rounded down to whole timer ticks); 9 a consecutive timer step moves backwards (a modular delta greater than half the 64-bit range). Status 9 also reports zero ticks. `cycle-clock-time` reports the four raw CNTVCT readings; `cycle-clock-bad-time` records the first backward pair and its stage (1 initial bracket, 2 polling, 3 final bracket). The report is split into short lines to reduce serial interleaving. Failed samples report zero cycles. The diagnostic
+7 cycle-counter overflow; 8 the sum of the two PMU read brackets
+exceeds 1% of the target interval (rounded down to whole timer ticks); 9 a consecutive timer step moves backwards (a modular delta greater than half the 64-bit range); 10 neither virtual nor physical counter advanced during bounded preflight. Status 9 also reports zero ticks. `cycle-clock-time` reports the four raw selected-counter readings; `cycle-clock-bad-time` records the first backward pair and its stage (1 initial bracket, 2 polling, 3 final bracket). The report is split into short lines to reduce serial interleaving. Failed samples report zero cycles. The diagnostic
 uses the 32-bit counter mode, rejects overflow, clears only its newly generated
 cycle overflow flag, and restores the previous PMCR and counter. The 2 ms
-bound is measured using CNTFRQ and CNTVCT over the outer timer readings enclosing both
+bound is measured using CNTFRQ and the selected architectural counter over the outer timer readings enclosing both
 PMU reads, including delays during either read. The reported ticks use the
 midpoints of the two read brackets as an estimate of the sampling interval.
 Successful samples require the sum of those bracket widths to be no more than
@@ -77,3 +77,5 @@ excluded. EL2 and EL3 PMU trap and security restrictions are not established;
 EL1 PMU access on secondaries still requires hardware validation; a trap can prevent startup before a line is
 printed. Use the existing watchdog and fastboot recovery path for an experiment.
 The diagnostic is absent unless the boot argument is explicitly set to 1.
+
+The diagnostic probes CNTVCT before and after enabling the virtual timer and probes CNTPCT after enabling it, with at most 10,000 reads per probe. Probe state 0 means no observed progress, 1 progress, and 2 backward movement. It selects CNTVCT when it advances, otherwise CNTPCT only if that advances; it reports the selected source and rejects either source if later measurement fails its bounds. The probe shows liveness, not that a counter has the advertised rate or that its use is safe on every platform. This remains an opt-in diagnostic, not a timer handoff fix. Enabling CNTV_CTL_EL0 controls the timer interrupt, not the system counter. Actual source access and rate require hardware verification.

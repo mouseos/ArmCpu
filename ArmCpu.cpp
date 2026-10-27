@@ -674,6 +674,10 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
              self->logicalId, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
       IOLog ("ArmCpu: cycle-clock-time cpu=%u before=%llu after=%llu end_before=%llu end_after=%llu\n",
              self->logicalId, sample.beginBefore, sample.beginAfter, sample.endBefore, sample.endAfter);
+      IOLog ("ArmCpu: cycle-clock-source cpu=%u source=%u ctl_before=%llx ctl_after=%llx cntkctl=%llx\n", self->logicalId, sample.timeSource, sample.timerControlBefore, sample.timerControlAfter, sample.timerAccess);
+      IOLog ("ArmCpu: timer-virtual-before cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.virtualBefore.status, sample.virtualBefore.first, sample.virtualBefore.last);
+      IOLog ("ArmCpu: timer-virtual-after cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.virtualAfter.status, sample.virtualAfter.first, sample.virtualAfter.last);
+      IOLog ("ArmCpu: timer-physical-after cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.physicalAfter.status, sample.physicalAfter.first, sample.physicalAfter.last);
       if (sample.badStage)
         IOLog ("ArmCpu: cycle-clock-bad-time cpu=%u stage=%u previous=%llu current=%llu\n",
                self->logicalId, sample.badStage, sample.badPrevious, sample.badCurrent);
@@ -722,6 +726,8 @@ void ArmCpu::startSecondary (void)
 
 #if ARMCPU_GICV2
 struct ArmCpuCycleRegisters {
+  unsigned source = 0;
+  uint64_t counter(unsigned which) { uint64_t v; if (which == 0) __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (v) :: "memory"); else __asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
   uint64_t id() { uint64_t v; __asm__ volatile ("mrs %0, id_aa64dfr0_el1" : "=r" (v)); return v; }
   uint64_t frequency() { uint64_t v; __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (v)); return v; }
   uint64_t pmcr() { uint64_t v; __asm__ volatile ("mrs %0, pmcr_el0" : "=r" (v)); return v; }
@@ -731,7 +737,7 @@ struct ArmCpuCycleRegisters {
   void clear_overflow(uint64_t v) { __asm__ volatile ("msr pmovsclr_el0, %0" :: "r" (v) : "memory"); }
   uint64_t filter() { uint64_t v; __asm__ volatile ("mrs %0, pmccfiltr_el0" : "=r" (v)); return v; }
   uint64_t cycle() { uint64_t v; __asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r" (v) :: "memory"); return v; }
-  uint64_t time() { uint64_t v; __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (v) :: "memory"); return v; }
+  uint64_t time() { return counter(source); }
   void set_cycle(uint64_t v) { __asm__ volatile ("msr pmccntr_el0, %0" :: "r" (v) : "memory"); }
   void set_pmcr(uint64_t v) { __asm__ volatile ("msr pmcr_el0, %0" :: "r" (v) : "memory"); }
   void enable_cycle() { uint64_t v = 1ULL << 31; __asm__ volatile ("msr pmcntenset_el0, %0" :: "r" (v) : "memory"); }
@@ -751,10 +757,12 @@ void ArmCpu::initCPU (bool boot)
     // Verify the actual calling core before any PMU access.
     if (((mpidr & 0xffffffULL) | ((mpidr >> 8) & 0xff000000ULL)) != (affinity & 0xffffffffULL)) { armcpu_smp_fail[logicalId] = 1; for (;;) { __asm__ volatile ("wfe"); } }
 #if ARMCPU_GICV2
+    ArmCpuCycleRegisters registers;
+    ArmCpuTimerProbe virtualBefore = {};
+    uint64_t timerControlBefore = 0;
     if (gGicV2 && diagnoseCycleClock) {
-      ArmCpuCycleRegisters registers;
-      ArmCpuCycleSample sample = armcpu_cycle_sample(registers);
-      cycleMailbox.publish (sample, mpidr);
+      __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (timerControlBefore));
+      virtualBefore = armcpu_timer_probe(registers, 0);
     }
 #endif
     if (!gRemoteGic && !wakeRedistributor (true)) { armcpu_smp_fail[logicalId] = 2; for (;;) { __asm__ volatile ("wfe"); } }
@@ -765,6 +773,29 @@ void ArmCpu::initCPU (bool boot)
     // install their handler directly. ml_install_interrupt_handler() records it in the calling core's cpu_data.
     ml_install_interrupt_handler (this, static_cast<int> (logicalId), this, reinterpret_cast<IOInterruptHandler> (&ArmCpu::dispatch), nullptr);
     enableCPUTimeBase (true);
+#if ARMCPU_GICV2
+    if (gGicV2 && diagnoseCycleClock) {
+      uint64_t timerControlAfter, timerAccess;
+      __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (timerControlAfter));
+      __asm__ volatile ("mrs %0, cntkctl_el1" : "=r" (timerAccess));
+      ArmCpuTimerProbe virtualAfter = armcpu_timer_probe(registers, 0);
+      ArmCpuTimerProbe physicalAfter = armcpu_timer_probe(registers, 1);
+      ArmCpuCycleSample sample = {};
+      unsigned selected = armcpu_timer_select(virtualAfter, physicalAfter);
+      if (selected) {
+        registers.source = selected - 1;
+        sample = armcpu_cycle_sample(registers);
+        sample.timeSource = registers.source + 1;
+      } else {
+        sample.frequency = registers.frequency();
+        sample.status = 10; // neither source passed the bounded liveness check
+      }
+      sample.virtualBefore = virtualBefore; sample.virtualAfter = virtualAfter;
+      sample.physicalAfter = physicalAfter; sample.timerControlBefore = timerControlBefore;
+      sample.timerControlAfter = timerControlAfter; sample.timerAccess = timerAccess;
+      cycleMailbox.publish (sample, mpidr);
+    }
+#endif
     setCPUState (kIOCPUStateRunning);
     armcpu_smp_step[logicalId] = 7;
     armcpu_smp_running = armcpu_smp_running + 1;

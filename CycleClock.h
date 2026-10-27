@@ -2,10 +2,32 @@
 #pragma once
 #include <stdint.h>
 
+// Probe before claiming that a counter can time a measurement. A small
+// bounded forward step permits normal 64-bit rollover but rejects regression.
+struct ArmCpuTimerProbe { uint64_t first, last; unsigned status; };
+template <typename R> static ArmCpuTimerProbe armcpu_timer_probe(R &r, unsigned source)
+{
+  ArmCpuTimerProbe p = {}; p.first = p.last = r.counter(source);
+  for (unsigned i = 0; i < 10000; ++i) {
+    uint64_t next = r.counter(source), delta = next - p.last;
+    if (delta > UINT64_MAX / 2) { p.last = next; p.status = 2; return p; }
+    p.last = next;
+    if (p.last != p.first) { p.status = 1; return p; }
+  }
+  return p; // stopped or too slow to observe within the bounded probe
+}
+
+// 0 means no qualified source; 1 is virtual, 2 physical. Do not select a
+// stalled or backward source, even if it has a nonzero register value.
+static inline unsigned armcpu_timer_select(const ArmCpuTimerProbe &v, const ArmCpuTimerProbe &p)
+{
+  return v.status == 1 ? 1 : p.status == 1 ? 2 : 0;
+}
+
 // One calling CPU, before interrupts are enabled. Refuse an already owned PMU.
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
-struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter, badPrevious, badCurrent; unsigned status, badStage; };
+struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter, badPrevious, badCurrent; unsigned status, badStage, timeSource; ArmCpuTimerProbe virtualBefore, virtualAfter, physicalAfter; uint64_t timerControlBefore, timerControlAfter, timerAccess; };
 
 // Single producer (the secondary) and single consumer (its reporter thread).
 // Publish only once, after every field including the actual MPIDR is stored.
