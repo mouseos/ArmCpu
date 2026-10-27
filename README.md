@@ -40,3 +40,20 @@ registers can only be programmed by the core that owns them.
 - Register values come from the Arm GICv2 architecture specification, the GIC-400 TRM (GICD_PIDR2) and the Armv8-A
   Architecture Reference Manual (RES1 bits of CPTR_EL2 and SCTLR_EL1). `MDCR_EL2.HPMN = PMCR_EL0.N` follows the Linux
   arm64 EL2 initialisation.
+
+### Opt-in secondary cycle-clock diagnostic
+
+With GICv2 and `sheng-smp=1`, `armcpu-cycle-clock=1` samples the PMU cycle
+counter on each secondary during `initCPU`, before enabling interrupts. The
+UART line `ArmCpu: cycle-clock` reports CPU, status, CNTFRQ, timer ticks,
+cycle delta and the original PMCR and cycle filter. For status 0 the mean
+active-cycle frequency in Hz is `cycles * cntfrq / ticks`; it is a roughly
+1 ms busy-loop observation, not a guarantee of the clock under idle or a
+later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
+3 PMU already enabled or cycle filtering active, 4 timer timeout and 5 zero
+cycles. A disabled PMU's counter value and control are restored. The boot CPU
+is deliberately excluded: its EL2 PMU trap state is not established. EL1
+PMU accesses on secondaries and any higher-EL security restrictions still
+require hardware validation; a trap can prevent startup before a line is
+printed. Use the existing watchdog and fastboot recovery path for an experiment.
+The diagnostic is absent unless the boot argument is explicitly set to 1.

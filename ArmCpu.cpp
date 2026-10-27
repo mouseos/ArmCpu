@@ -6,6 +6,7 @@
 #include <libkern/c++/OSSymbol.h>
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
+#include "CycleClock.h"
 
 // Exact private entry from Darwin 23 arm/rtclock.h. Its full data header is
 // not exported to IOKit; the IRQ path calls the real kernel implementation.
@@ -61,6 +62,7 @@ class ArmCpu : public IOCPU {
   uint64_t redistSize = 0;
   bool skipGic = false;
   bool diagnosePower = false;
+  bool diagnoseCycleClock = false;
   bool secondary = false;
   uint32_t logicalId = 0;
   bool mapGic (void);
@@ -487,6 +489,9 @@ bool ArmCpu::start (IOService *provider)
   unsigned diagnostic = 0;
   PE_parse_boot_argn ("armcpu-diagnostics", &diagnostic, sizeof (diagnostic));
   diagnosePower = diagnostic == 1; // per CPU instance
+  unsigned cycleClock = 0;
+  PE_parse_boot_argn ("armcpu-cycle-clock", &cycleClock, sizeof (cycleClock));
+  diagnoseCycleClock = cycleClock == 1;
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
   memcpy (&physical, reg->getBytesNoCopy (), sizeof (physical));
@@ -643,10 +648,35 @@ void ArmCpu::startSecondary (void)
   thread_deallocate (thread);
 }
 
+#if ARMCPU_GICV2
+struct ArmCpuCycleRegisters {
+  uint64_t id() { uint64_t v; __asm__ volatile ("mrs %0, id_aa64dfr0_el1" : "=r" (v)); return v; }
+  uint64_t frequency() { uint64_t v; __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (v)); return v; }
+  uint64_t pmcr() { uint64_t v; __asm__ volatile ("mrs %0, pmcr_el0" : "=r" (v)); return v; }
+  uint64_t enabled() { uint64_t v; __asm__ volatile ("mrs %0, pmcntenset_el0" : "=r" (v)); return v; }
+  uint64_t filter() { uint64_t v; __asm__ volatile ("mrs %0, pmccfiltr_el0" : "=r" (v)); return v; }
+  uint64_t cycle() { uint64_t v; __asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r" (v) :: "memory"); return v; }
+  uint64_t time() { uint64_t v; __asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
+  void set_cycle(uint64_t v) { __asm__ volatile ("msr pmccntr_el0, %0" :: "r" (v) : "memory"); }
+  void set_pmcr(uint64_t v) { __asm__ volatile ("msr pmcr_el0, %0" :: "r" (v) : "memory"); }
+  void enable_cycle() { uint64_t v = 1ULL << 31; __asm__ volatile ("msr pmcntenset_el0, %0" :: "r" (v) : "memory"); }
+  void disable_cycle() { uint64_t v = 1ULL << 31; __asm__ volatile ("msr pmcntenclr_el0, %0" :: "r" (v) : "memory"); }
+  void barrier() { __asm__ volatile ("isb" ::: "memory"); }
+};
+#endif
+
 void ArmCpu::initCPU (bool boot)
 {
   if (secondary) {
     if (!boot) { panic ("ArmCpu: secondary resume is unsupported"); }
+#if ARMCPU_GICV2
+    if (gGicV2 && diagnoseCycleClock) {
+      ArmCpuCycleRegisters registers;
+      ArmCpuCycleSample sample = armcpu_cycle_sample(registers);
+      IOLog("ArmCpu: cycle-clock cpu=%u status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx\n",
+            logicalId, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter);
+    }
+#endif
     armcpu_smp_step[logicalId] = 5;
     uint64_t mpidr;
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (mpidr));
