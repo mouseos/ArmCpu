@@ -37,7 +37,7 @@ static inline unsigned armcpu_timer_select(const ArmCpuTimerProbe &v, const ArmC
 // One calling CPU, before interrupts are enabled. Refuse an already owned PMU.
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
-struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter, badPrevious, badCurrent; unsigned status, badStage, timeSource; ArmCpuTimerProbe virtualBefore, virtualAfter, physicalAfter; uint64_t timerControlBefore, timerControlAfter, timerAccess; };
+struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, enabledBefore, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter, badPrevious, badCurrent; unsigned status, badStage, timeSource; ArmCpuTimerProbe virtualBefore, virtualAfter, physicalAfter; uint64_t timerControlBefore, timerControlAfter, timerAccess; };
 
 // Single producer (the secondary) and single consumer (its reporter thread).
 // Publish only once, after every field including the actual MPIDR is stored.
@@ -91,7 +91,7 @@ struct ArmCpuCycleReportState {
   bool expired(uint64_t now, uint64_t deadline) const { return now >= deadline || waits >= 150; }
   void waited() { ++waits; }
 };
-template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
+template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r, uint64_t targetTicks = 0, uint64_t maxOuterTicks = 0)
 {
   ArmCpuCycleSample s = {};
   const uint64_t version = (r.id() >> 8) & 15;
@@ -100,6 +100,7 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   if (s.frequency < 1000 || s.frequency > 1000000000) { s.status = 2; return s; }
   s.pmcr = r.pmcr();
   const uint64_t enabled = r.enabled();
+  s.enabledBefore = enabled;
   s.filter = r.filter();
   s.interrupts = r.interrupts();
   s.overflow = r.overflow();
@@ -119,7 +120,8 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   uint64_t previous = beginAfter;
   bool invalidTime = false;
   unsigned count = 0, unchanged = 0;
-  const uint64_t target = s.frequency / 1000; // about one millisecond
+  const uint64_t target = targetTicks ? targetTicks : s.frequency / 1000;
+  const uint64_t outerLimit = maxOuterTicks ? maxOuterTicks : target * 2;
   // A small backward jump becomes a huge unsigned delta. Reject it before
   // accepting it as a completed interval; modular wrap remains supported.
   invalidTime = (beginAfter - beginBefore) > UINT64_MAX / 2;
@@ -154,7 +156,7 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   if (!invalidTime)
     s.ticks = (endBefore - beginBefore) + s.endReadTicks / 2 - s.beginReadTicks / 2;
   s.cycles = static_cast<uint32_t>(cyclesEnd - cyclesBegin);
-  s.status = invalidTime ? 9 : s.outerTicks > target * 2 ? 6 : (endBefore - beginAfter) < target ? 4 :
+  s.status = invalidTime ? 9 : s.outerTicks > outerLimit ? 6 : (endBefore - beginAfter) < target ? 4 :
              (s.overflowAfter & (1ULL << 31)) ? 7 :
              s.beginReadTicks > target / 100 || s.endReadTicks > target / 100 - s.beginReadTicks ? 8 :
              s.cycles == 0 ? 5 : 0;

@@ -99,6 +99,8 @@ public:
   const OSSymbol *getCPUName (void) override;
 };
 
+static void armcpu_runtime_cycle_worker(void *, wait_result_t);
+
 OSDefineMetaClassAndStructors (ArmCpu, IOCPU)
 
 // Redistributor ISENABLER0: SGIs 0..15 (only SGI 0 is used by the kernel; the others let the self-SGI probe tell which INTIDs the GIC accepts) and PPI 27.
@@ -607,6 +609,12 @@ bool ArmCpu::start (IOService *provider)
   registerService ();
   __atomic_store_n (&gBootRegistered, 1U, __ATOMIC_RELEASE);
   drainPending ();
+  unsigned runtimeCycle = 0;
+  if (gGicV2 && PE_parse_boot_argn ("armcpu-runtime-cycle", &runtimeCycle, sizeof (runtimeCycle)) && runtimeCycle == 1) {
+    thread_t worker;
+    if (kernel_thread_start (&armcpu_runtime_cycle_worker, nullptr, &worker) == KERN_SUCCESS) thread_deallocate (worker);
+    else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-cycle error=thread-create\n");
+  }
   return true;
 }
 
@@ -792,6 +800,7 @@ void ArmCpu::startSecondary (void)
 
 #if ARMCPU_GICV2
 struct ArmCpuCycleRegisters {
+  uint64_t mpidr() { uint64_t v; __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (v)); return v; }
   unsigned source = 0;
   uint64_t counter(unsigned which) { uint64_t v; if (which == 0) __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (v) :: "memory"); else __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
   uint64_t id() { uint64_t v; __asm__ volatile ("mrs %0, id_aa64dfr0_el1" : "=r" (v)); return v; }
@@ -810,6 +819,11 @@ struct ArmCpuCycleRegisters {
   void disable_cycle() { uint64_t v = 1ULL << 31; __asm__ volatile ("msr pmcntenclr_el0, %0" :: "r" (v) : "memory"); }
   void barrier() { __asm__ volatile ("isb" ::: "memory"); }
 };
+#include "RuntimeCycleRunner.h"
+#endif
+
+#if !ARMCPU_GICV2
+static void armcpu_runtime_cycle_worker(void *, wait_result_t) {}
 #endif
 
 void ArmCpu::initCPU (bool boot)
