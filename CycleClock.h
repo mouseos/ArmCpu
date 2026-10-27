@@ -51,7 +51,9 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   s.ticks = (endBefore - beginBefore) + s.endReadTicks / 2 - s.beginReadTicks / 2;
   s.cycles = static_cast<uint32_t>(cyclesEnd - cyclesBegin);
   s.status = s.outerTicks > target * 2 ? 6 : (endBefore - beginAfter) < target ? 4 :
-             (s.overflowAfter & (1ULL << 31)) ? 7 : s.cycles == 0 ? 5 : 0;
+             (s.overflowAfter & (1ULL << 31)) ? 7 :
+             s.beginReadTicks > target / 100 || s.endReadTicks > target / 100 - s.beginReadTicks ? 8 :
+             s.cycles == 0 ? 5 : 0;
   if (s.status) s.cycles = 0;
   return s;
 }

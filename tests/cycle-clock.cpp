@@ -2,7 +2,7 @@
 #include <cassert>
 #include <cstdio>
 struct Fake {
-  uint64_t ver=1, freq=13000000, control=8, enables=0, filters=0, counter=123, now=0;
+  uint64_t ver=1, freq=26000000, control=8, enables=0, filters=0, counter=123, now=0;
   uint64_t irq=0, flags=0, step=100, cycleStep=10000;
   unsigned writes=0; bool running=false, stuck=false, noCycles=false;
   uint64_t id(){return ver<<8;} uint64_t frequency(){return freq;} uint64_t pmcr(){return control;}
@@ -14,7 +14,7 @@ struct Fake {
   void enable_cycle(){running=true; ++writes;} void disable_cycle(){running=false; ++writes;} void barrier(){}
 };
 int main(){
-  Fake f; auto s=armcpu_cycle_sample(f); assert(!s.status && s.frequency==13000000 && s.ticks==13100 && s.cycles==1310000); assert(f.counter==123 && f.control==8 && !f.running);
+  Fake f; auto s=armcpu_cycle_sample(f); assert(!s.status && s.frequency==26000000 && s.ticks==26100 && s.cycles==2610000); assert(f.counter==123 && f.control==8 && !f.running);
   Fake n; n.ver=0; assert(armcpu_cycle_sample(n).status==1 && !n.writes);
   Fake t; t.freq=0; assert(armcpu_cycle_sample(t).status==2 && !t.writes);
   Fake p; p.control=1; assert(armcpu_cycle_sample(p).status==3 && !p.writes);

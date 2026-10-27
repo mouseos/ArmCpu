@@ -6,7 +6,7 @@
 // The PMU runs at 100 cycles per timer tick, including inside slow reads.
 struct Independent {
   uint64_t clock=0, counter=123, control=8, flags=0;
-  uint64_t delayFirst=10, delayLast=20;
+  uint64_t delayFirst=3, delayLast=5, freq=1000000;
   unsigned reads=0;
   bool running=false;
   void advance(uint64_t ticks) {
@@ -18,7 +18,7 @@ struct Independent {
     }
   }
   uint64_t id(){return 1ULL << 8;}
-  uint64_t frequency(){return 1000000;}
+  uint64_t frequency(){return freq;}
   uint64_t pmcr(){return control;}
   uint64_t enabled(){return 0;}
   uint64_t filter(){return 0;}
@@ -38,8 +38,8 @@ static void restored(const Independent &m) {
 }
 int main() {
   Independent normal; auto a=armcpu_cycle_sample(normal);
-  assert(a.status==0 && a.beginReadTicks==11 && a.endReadTicks==21);
-  assert(a.outerTicks==1032 && a.ticks==1016 && a.cycles==102100);
+  assert(a.status==0 && a.beginReadTicks==4 && a.endReadTicks==6);
+  assert(a.outerTicks==1010 && a.ticks==1005 && a.cycles==100600);
   restored(normal);
   Independent first; first.delayFirst=2000; auto b=armcpu_cycle_sample(first);
   assert(b.status==6 && !b.cycles && b.beginReadTicks==2001 && b.outerTicks>2000);
@@ -49,11 +49,31 @@ int main() {
   restored(last);
   Independent boundary; boundary.delayFirst=499; boundary.delayLast=499;
   auto d=armcpu_cycle_sample(boundary);
-  assert(d.outerTicks==2000 && d.status==0);
+  assert(d.outerTicks==2000 && d.status==8 && !d.cycles);
   restored(boundary);
   Independent beyond; beyond.delayFirst=500; beyond.delayLast=499;
   auto e=armcpu_cycle_sample(beyond);
   assert(e.outerTicks==2001 && e.status==6 && !e.cycles);
   restored(beyond);
-  puts("PASS: independent timer/PMU model, both slow reads, 2 ms boundary and restoration");
+  Independent combined; combined.delayFirst=4; combined.delayLast=5;
+  auto f=armcpu_cycle_sample(combined);
+  assert(f.outerTicks < 2000 && f.beginReadTicks==5 && f.endReadTicks==6 && f.status==8 && !f.cycles);
+  restored(combined);
+  Independent slowFirst; slowFirst.delayFirst=9; slowFirst.delayLast=0;
+  auto g=armcpu_cycle_sample(slowFirst);
+  assert(g.beginReadTicks==10 && g.endReadTicks==1 && g.outerTicks < 2000 && g.status==8 && !g.cycles);
+  restored(slowFirst);
+  Independent slowLast; slowLast.delayFirst=0; slowLast.delayLast=9;
+  auto h=armcpu_cycle_sample(slowLast);
+  assert(h.beginReadTicks==1 && h.endReadTicks==10 && h.outerTicks < 2000 && h.status==8 && !h.cycles);
+  restored(slowLast);
+  Independent fractional; fractional.freq=999999; fractional.delayFirst=3; fractional.delayLast=4;
+  auto i=armcpu_cycle_sample(fractional);
+  assert(i.beginReadTicks+i.endReadTicks==9 && i.status==0);
+  restored(fractional);
+  Independent rounded; rounded.freq=999999;
+  auto j=armcpu_cycle_sample(rounded);
+  assert(j.beginReadTicks+j.endReadTicks==10 && j.status==8 && !j.cycles);
+  restored(rounded);
+  puts("PASS: independent timer/PMU model, 1% read-width boundary, slow endpoints, 2 ms limit and restoration");
 }

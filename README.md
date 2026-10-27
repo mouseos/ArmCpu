@@ -54,12 +54,16 @@ active-cycle frequency in Hz is `cycles * cntfrq / ticks`; it is a roughly
 later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
 3 PMU already enabled, cycle filtering active, or any interrupt or overflow
 flag already set; 4 timer timeout; 5 zero cycles; 6 elapsed time exceeds 2 ms;
-and 7 cycle-counter overflow. Failed samples report zero cycles. The diagnostic
+7 cycle-counter overflow; and 8 the sum of the two PMU read brackets
+exceeds 1% of the target interval (rounded down to whole timer ticks). Failed samples report zero cycles. The diagnostic
 uses the 32-bit counter mode, rejects overflow, clears only its newly generated
 cycle overflow flag, and restores the previous PMCR and counter. The 2 ms
 bound is measured using CNTFRQ over the outer timer readings enclosing both
 PMU reads, including delays during either read. The reported ticks use the
 midpoints of the two read brackets as an estimate of the sampling interval.
+Successful samples require the sum of those bracket widths to be no more than
+1% of the target; this bounds endpoint timing uncertainty, not all sources of
+frequency measurement error.
 The core MPIDR is checked before any PMU access. The boot CPU is deliberately
 excluded. EL2 and EL3 PMU trap and security restrictions are not established;
 EL1 PMU access on secondaries still requires hardware validation; a trap can prevent startup before a line is
