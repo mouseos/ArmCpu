@@ -5,7 +5,7 @@
 // One calling CPU, before interrupts are enabled. Refuse an already owned PMU.
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
-struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks; unsigned status; };
+struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter; unsigned status; };
 
 // Single producer (the secondary) and single consumer (its reporter thread).
 // Publish only once, after every field including the actual MPIDR is stored.
@@ -74,9 +74,18 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   const uint64_t cyclesBegin = r.cycle();
   const uint64_t beginAfter = r.time();
   uint64_t endBefore = beginAfter;
+  uint64_t previous = beginAfter;
+  bool invalidTime = false;
   unsigned count = 0;
   const uint64_t target = s.frequency / 1000; // about one millisecond
-  while ((endBefore - beginAfter) < target && count++ < 10000000) { endBefore = r.time(); }
+  // A small backward jump becomes a huge unsigned delta. Reject it before
+  // accepting it as a completed interval; modular wrap remains supported.
+  invalidTime = (beginAfter - beginBefore) > UINT64_MAX / 2;
+  while (!invalidTime && (endBefore - beginAfter) < target && count++ < 10000000) {
+    endBefore = r.time();
+    if (endBefore - previous > UINT64_MAX / 2) invalidTime = true;
+    previous = endBefore;
+  }
   const uint64_t cyclesEnd = r.cycle();
   const uint64_t endAfter = r.time();
   r.disable_cycle();
@@ -86,14 +95,18 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   r.set_pmcr(original);
   r.set_cycle(saved);
   r.barrier();
+  s.beginBefore = beginBefore; s.beginAfter = beginAfter;
+  s.endBefore = endBefore; s.endAfter = endAfter;
+  invalidTime = invalidTime || endAfter - endBefore > UINT64_MAX / 2;
   s.beginReadTicks = beginAfter - beginBefore;
   s.endReadTicks = endAfter - endBefore;
   s.outerTicks = endAfter - beginBefore;
   // Midpoints estimate the timestamps of the two PMU reads. The full outer
   // interval bounds both reads and therefore also their true separation.
-  s.ticks = (endBefore - beginBefore) + s.endReadTicks / 2 - s.beginReadTicks / 2;
+  if (!invalidTime)
+    s.ticks = (endBefore - beginBefore) + s.endReadTicks / 2 - s.beginReadTicks / 2;
   s.cycles = static_cast<uint32_t>(cyclesEnd - cyclesBegin);
-  s.status = s.outerTicks > target * 2 ? 6 : (endBefore - beginAfter) < target ? 4 :
+  s.status = invalidTime ? 9 : s.outerTicks > target * 2 ? 6 : (endBefore - beginAfter) < target ? 4 :
              (s.overflowAfter & (1ULL << 31)) ? 7 :
              s.beginReadTicks > target / 100 || s.endReadTicks > target / 100 - s.beginReadTicks ? 8 :
              s.cycles == 0 ? 5 : 0;

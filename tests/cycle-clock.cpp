@@ -4,12 +4,12 @@
 struct Fake {
   uint64_t ver=1, freq=26000000, control=8, enables=0, filters=0, counter=123, now=0;
   uint64_t irq=0, flags=0, step=100, cycleStep=10000;
-  unsigned writes=0; bool running=false, stuck=false, noCycles=false;
+  unsigned writes=0, reads=0, regressAt=0; bool running=false, stuck=false, noCycles=false;
   uint64_t id(){return ver<<8;} uint64_t frequency(){return freq;} uint64_t pmcr(){return control;}
   uint64_t interrupts(){return irq;} uint64_t overflow(){return flags;}
   void clear_overflow(uint64_t x){flags &= ~x; ++writes;}
   uint64_t enabled(){return enables;} uint64_t filter(){return filters;} uint64_t cycle(){return counter;}
-  uint64_t time(){if(!stuck){now+=step; if(running && !noCycles) { counter+=cycleStep; if(counter > 0xffffffffULL) { flags |= 1ULL<<31; counter &= 0xffffffffULL; } }} return now;}
+  uint64_t time(){++reads; if(reads==regressAt){now-=3; return now;} if(!stuck){now+=step; if(running && !noCycles) { counter+=cycleStep; if(counter > 0xffffffffULL) { flags |= 1ULL<<31; counter &= 0xffffffffULL; } }} return now;}
   void set_cycle(uint64_t x){counter=x; ++writes;} void set_pmcr(uint64_t x){control=x; ++writes;}
   void enable_cycle(){running=true; ++writes;} void disable_cycle(){running=false; ++writes;} void barrier(){}
 };
@@ -26,6 +26,9 @@ int main(){
   Fake eventOverflow; eventOverflow.flags=1; assert(armcpu_cycle_sample(eventOverflow).status==3 && !eventOverflow.writes);
   Fake wrap; wrap.cycleStep=0x100000001ULL; auto ws=armcpu_cycle_sample(wrap); assert(ws.status==7 && !ws.cycles && ws.overflowAfter==(1ULL<<31) && !wrap.flags && wrap.counter==123 && wrap.control==8 && !wrap.running);
   Fake late; late.step=27000; auto ls=armcpu_cycle_sample(late); assert(ls.status==6 && !ls.cycles && late.counter==123 && !late.running);
+  Fake backwards; backwards.regressAt=2; auto bs=armcpu_cycle_sample(backwards); assert(bs.status==9 && !bs.ticks && !bs.cycles && bs.beginAfter - bs.beginBefore == UINT64_MAX-2 && backwards.counter==123 && backwards.control==8 && !backwards.running);
+  Fake loopBackwards; loopBackwards.regressAt=3; assert(armcpu_cycle_sample(loopBackwards).status==9 && loopBackwards.counter==123 && !loopBackwards.running);
+  Fake wrapTime; wrapTime.now=UINT64_MAX-200; assert(armcpu_cycle_sample(wrapTime).status==0);
   Fake zero; zero.noCycles=true; assert(armcpu_cycle_sample(zero).status==5 && zero.counter==123 && zero.control==8 && !zero.running);
   Fake reset; reset.control=14; assert(armcpu_cycle_sample(reset).status==0 && reset.control==8);
   Fake z; z.stuck=true; assert(armcpu_cycle_sample(z).status==4 && z.counter==123 && z.control==8 && !z.running);

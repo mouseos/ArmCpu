@@ -65,10 +65,10 @@ later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
 3 PMU already enabled, cycle filtering active, or any interrupt or overflow
 flag already set; 4 timer timeout; 5 zero cycles; 6 elapsed time exceeds 2 ms;
 7 cycle-counter overflow; and 8 the sum of the two PMU read brackets
-exceeds 1% of the target interval (rounded down to whole timer ticks). Failed samples report zero cycles. The diagnostic
+exceeds 1% of the target interval (rounded down to whole timer ticks); 9 a consecutive timer step moves backwards (a modular delta greater than half the 64-bit range). Status 9 also reports zero ticks. `cycle-clock-time` reports the four raw CNTVCT readings for diagnosis. Failed samples report zero cycles. The diagnostic
 uses the 32-bit counter mode, rejects overflow, clears only its newly generated
 cycle overflow flag, and restores the previous PMCR and counter. The 2 ms
-bound is measured using CNTFRQ over the outer timer readings enclosing both
+bound is measured using CNTFRQ and CNTVCT over the outer timer readings enclosing both
 PMU reads, including delays during either read. The reported ticks use the
 midpoints of the two read brackets as an estimate of the sampling interval.
 Successful samples require the sum of those bracket widths to be no more than

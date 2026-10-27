@@ -665,6 +665,8 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
     if (!state.sampleReported && self->cycleMailbox.read (sample, mpidr)) {
       IOLog ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
              self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
+      IOLog ("ArmCpu: cycle-clock-time cpu=%u begin_before=%llu begin_after=%llu end_before=%llu end_after=%llu\n",
+             self->logicalId, sample.beginBefore, sample.beginAfter, sample.endBefore, sample.endAfter);
       state.sampleReported = true;
     }
     if (!state.done ()) {
@@ -714,7 +716,7 @@ struct ArmCpuCycleRegisters {
   void clear_overflow(uint64_t v) { __asm__ volatile ("msr pmovsclr_el0, %0" :: "r" (v) : "memory"); }
   uint64_t filter() { uint64_t v; __asm__ volatile ("mrs %0, pmccfiltr_el0" : "=r" (v)); return v; }
   uint64_t cycle() { uint64_t v; __asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r" (v) :: "memory"); return v; }
-  uint64_t time() { uint64_t v; __asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
+  uint64_t time() { uint64_t v; __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (v) :: "memory"); return v; }
   void set_cycle(uint64_t v) { __asm__ volatile ("msr pmccntr_el0, %0" :: "r" (v) : "memory"); }
   void set_pmcr(uint64_t v) { __asm__ volatile ("msr pmcr_el0, %0" :: "r" (v) : "memory"); }
   void enable_cycle() { uint64_t v = 1ULL << 31; __asm__ volatile ("msr pmcntenset_el0, %0" :: "r" (v) : "memory"); }
