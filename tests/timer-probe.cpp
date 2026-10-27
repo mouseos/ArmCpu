@@ -5,10 +5,10 @@
 
 struct Source {
   uint64_t v = 0, p = 500;
-  unsigned n = 0;
+  unsigned n = 0, physicalReads = 0;
   bool stopped = false, backwards = false, slow = false;
   uint64_t counter(unsigned which) {
-    if (which == 1) return p++;
+    if (which == 1) { ++physicalReads; return p++; }
     ++n;
     if (backwards && n == 2) return --v;
     if (!stopped && (!slow || n == 3)) ++v;
@@ -18,12 +18,18 @@ struct Source {
 int main() {
   Source stalled; stalled.stopped = true;
   auto v = armcpu_timer_probe(stalled, 0);
-  assert(v.status == 0 && v.first == 0 && v.last == 0 && stalled.n == 10001);
+  assert(v.status == 0 && v.first == 0 && v.last == 0 && stalled.n == 1025);
   auto p = armcpu_timer_probe(stalled, 1);
   assert(p.status == 1 && p.first == 500 && p.last == 501);
   assert(armcpu_timer_select(v, p) == 2);
   assert(armcpu_timer_select(p, p) == 1);
   assert(armcpu_timer_select(v, v) == 0);
+  Source virtualRunning; ArmCpuTimerProbe vr, pr;
+  armcpu_probe_timer_sources(virtualRunning, vr, pr);
+  assert(vr.status == 1 && pr.status == 3 && virtualRunning.physicalReads == 0);
+  Source virtualStopped; virtualStopped.stopped = true;
+  armcpu_probe_timer_sources(virtualStopped, vr, pr);
+  assert(vr.status == 0 && pr.status == 1 && virtualStopped.physicalReads == 2);
   Source regression; regression.v = 42; regression.backwards = true;
   auto r = armcpu_timer_probe(regression, 0);
   assert(r.status == 2 && r.first == 43 && r.last == 42);

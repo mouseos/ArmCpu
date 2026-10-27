@@ -8,13 +8,23 @@ struct ArmCpuTimerProbe { uint64_t first, last; unsigned status; };
 template <typename R> static ArmCpuTimerProbe armcpu_timer_probe(R &r, unsigned source)
 {
   ArmCpuTimerProbe p = {}; p.first = p.last = r.counter(source);
-  for (unsigned i = 0; i < 10000; ++i) {
+  for (unsigned i = 0; i < 1024; ++i) {
     uint64_t next = r.counter(source), delta = next - p.last;
     if (delta > UINT64_MAX / 2) { p.last = next; p.status = 2; return p; }
     p.last = next;
     if (p.last != p.first) { p.status = 1; return p; }
   }
   return p; // stopped or too slow to observe within the bounded probe
+}
+
+// State 3 means the physical counter was not accessed. Only probe it when
+// the virtual counter fails its bounded liveness check.
+template <typename R> static void armcpu_probe_timer_sources(R &r, ArmCpuTimerProbe &v, ArmCpuTimerProbe &p)
+{
+  v = armcpu_timer_probe(r, 0);
+  p = {};
+  p.status = 3;
+  if (v.status != 1) p = armcpu_timer_probe(r, 1);
 }
 
 // 0 means no qualified source; 1 is virtual, 2 physical. Do not select a
@@ -64,6 +74,15 @@ struct ArmCpuCycleStart {
   }
 };
 
+// The callback is never invoked with interrupts disabled. Callers may record
+// the failure without consuming the published mailbox contents.
+template <typename F> static bool armcpu_report_if_irq(bool enabled, F log)
+{
+  if (!enabled) return false;
+  log();
+  return true;
+}
+
 // Reporter-owned state: pending messages never retire either input.
 struct ArmCpuCycleReportState {
   bool startReported, sampleReported;
@@ -99,17 +118,18 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   uint64_t endBefore = beginAfter;
   uint64_t previous = beginAfter;
   bool invalidTime = false;
-  unsigned count = 0;
+  unsigned count = 0, unchanged = 0;
   const uint64_t target = s.frequency / 1000; // about one millisecond
   // A small backward jump becomes a huge unsigned delta. Reject it before
   // accepting it as a completed interval; modular wrap remains supported.
   invalidTime = (beginAfter - beginBefore) > UINT64_MAX / 2;
   if (invalidTime) { s.badPrevious = beginBefore; s.badCurrent = beginAfter; s.badStage = 1; }
-  while (!invalidTime && (endBefore - beginAfter) < target && count++ < 10000000) {
+  while (!invalidTime && (endBefore - beginAfter) < target && count++ < 262144 && unchanged < 4096) {
     endBefore = r.time();
     if (endBefore - previous > UINT64_MAX / 2) {
       invalidTime = true; s.badPrevious = previous; s.badCurrent = endBefore; s.badStage = 2;
     }
+    unchanged = endBefore == previous ? unchanged + 1 : 0;
     previous = endBefore;
   }
   const uint64_t cyclesEnd = r.cycle();

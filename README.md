@@ -49,7 +49,7 @@ completed sample and that core's MPIDR are published to an independent,
 interrupts-enabled reporter thread. It reports `cycle-clock-start` with the
 `processor_start` result and the startup thread's interrupt state before and
 after the call. It waits at most 15 seconds (or 150 polling sleeps) for both results, then logs `cycle-clock-incomplete` once and exits. Published results remain in their mailboxes even if they arrive later; no late UART report is emitted. A startup-thread creation
-failure is reported as result -1000. A reporter-thread creation failure is
+failure is reported as result -1000. Each reporter log checks interrupt state; on a disabled state it suppresses the log, records reason 2 in `armcpu_cycle_reporter_failed`, and does not sleep; the standalone reporter restores interrupts before terminating. A reporter-thread creation failure is
 recorded in `armcpu_cycle_reporter_failed` and logged if interrupts are enabled.
 Neither incomplete samples nor unreturned start calls are treated as success.
 The
@@ -61,7 +61,7 @@ active-cycle frequency in Hz is `cycles * cntfrq / ticks`; it is a roughly
 1 ms busy-loop observation, not a guarantee of the clock under idle or a
 later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
 3 PMU already enabled, cycle filtering active, or any interrupt or overflow
-flag already set; 4 timer timeout; 5 zero cycles; 6 elapsed time exceeds 2 ms;
+flag already set; 4 timer timeout or read limit (262,144 total or 4,096 consecutive unchanged reads); 5 zero cycles; 6 elapsed time exceeds 2 ms;
 7 cycle-counter overflow; 8 the sum of the two PMU read brackets
 exceeds 1% of the target interval (rounded down to whole timer ticks); 9 a consecutive timer step moves backwards (a modular delta greater than half the 64-bit range); 10 neither virtual nor physical counter advanced during bounded preflight. Status 9 also reports zero ticks. `cycle-clock-time` reports the four raw selected-counter readings; `cycle-clock-bad-time` records the first backward pair and its stage (1 initial bracket, 2 polling, 3 final bracket). The report is split into short lines to reduce serial interleaving. Failed samples report zero cycles. The diagnostic
 uses the 32-bit counter mode, rejects overflow, clears only its newly generated
@@ -78,4 +78,4 @@ EL1 PMU access on secondaries still requires hardware validation; a trap can pre
 printed. Use the existing watchdog and fastboot recovery path for an experiment.
 The diagnostic is absent unless the boot argument is explicitly set to 1.
 
-The diagnostic probes CNTVCT before and after enabling the virtual timer and probes CNTPCT after enabling it, with at most 10,000 reads per probe. Probe state 0 means no observed progress, 1 progress, and 2 backward movement. It selects CNTVCT when it advances, otherwise CNTPCT only if that advances; it reports the selected source and rejects either source if later measurement fails its bounds. The probe shows liveness, not that a counter has the advertised rate or that its use is safe on every platform. This remains an opt-in diagnostic, not a timer handoff fix. Enabling CNTV_CTL_EL0 controls the timer interrupt, not the system counter. Actual source access and rate require hardware verification.
+The diagnostic probes CNTVCT before and after enabling the virtual timer and probes CNTPCT after enabling it only when CNTVCT did not pass, with at most 1,025 reads per probe. Probe state 0 means no observed progress, 1 progress, 2 backward movement, and 3 not probed (physical counter only). It selects CNTVCT when it advances, otherwise CNTPCT only if that advances; it reports the selected source and rejects either source if later measurement fails its bounds. The probe shows liveness, not that a counter has the advertised rate or that its use is safe on every platform. This remains an opt-in diagnostic, not a timer handoff fix. Enabling CNTV_CTL_EL0 controls the timer interrupt, not the system counter. Actual source access and rate require hardware verification.

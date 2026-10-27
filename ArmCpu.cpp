@@ -656,30 +656,35 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
   ArmCpuCycleReportState state = {};
   uint64_t deadline;
   clock_interval_to_deadline (15, 1000000000, &deadline);
-  // Ordinary kernel thread continuations enter with interrupts enabled. The
-  // independent reporter can run even if processor_start never returns.
+  // Each log is gated individually; never sleep with IRQs disabled. A failed
+  // reporter leaves both mailboxes intact and records the reason for inspection.
+#define ARMCPU_REPORT_LOG(...) do { \
+    if (!armcpu_report_if_irq (ml_get_interrupts_enabled (), [&] { IOLog (__VA_ARGS__); })) \
+      armcpu_cycle_reporter_failed[self->logicalId] = 2; \
+  } while (0)
   while (!state.done ()) {
+    if (!ml_get_interrupts_enabled ()) { armcpu_cycle_reporter_failed[self->logicalId] = 2; break; }
     int result; unsigned before, after;
     if (!state.startReported && self->cycleStart.read (result, before, after)) {
-      IOLog ("ArmCpu: cycle-clock-start cpu=%u result=%d irq_before=%u irq_after=%u\n", self->logicalId, result, before, after);
+      ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-start cpu=%u result=%d irq_before=%u irq_after=%u\n", self->logicalId, result, before, after);
       state.startReported = true;
     }
     ArmCpuCycleSample sample; uint64_t mpidr;
     if (!state.sampleReported && self->cycleMailbox.read (sample, mpidr)) {
-      IOLog ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu\n",
+      ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu\n",
              self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles);
-      IOLog ("ArmCpu: cycle-clock-pmu cpu=%u pmcr=%llx filter=%llx interrupts=%llx overflow=%llx after=%llx\n",
+      ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-pmu cpu=%u pmcr=%llx filter=%llx interrupts=%llx overflow=%llx after=%llx\n",
              self->logicalId, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter);
-      IOLog ("ArmCpu: cycle-clock-window cpu=%u outer=%llu begin=%llu end=%llu\n",
+      ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-window cpu=%u outer=%llu begin=%llu end=%llu\n",
              self->logicalId, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
-      IOLog ("ArmCpu: cycle-clock-time cpu=%u before=%llu after=%llu end_before=%llu end_after=%llu\n",
+      ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-time cpu=%u before=%llu after=%llu end_before=%llu end_after=%llu\n",
              self->logicalId, sample.beginBefore, sample.beginAfter, sample.endBefore, sample.endAfter);
-      IOLog ("ArmCpu: cycle-clock-source cpu=%u source=%u ctl_before=%llx ctl_after=%llx cntkctl=%llx\n", self->logicalId, sample.timeSource, sample.timerControlBefore, sample.timerControlAfter, sample.timerAccess);
-      IOLog ("ArmCpu: timer-virtual-before cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.virtualBefore.status, sample.virtualBefore.first, sample.virtualBefore.last);
-      IOLog ("ArmCpu: timer-virtual-after cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.virtualAfter.status, sample.virtualAfter.first, sample.virtualAfter.last);
-      IOLog ("ArmCpu: timer-physical-after cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.physicalAfter.status, sample.physicalAfter.first, sample.physicalAfter.last);
+      ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-source cpu=%u source=%u ctl_before=%llx ctl_after=%llx cntkctl=%llx\n", self->logicalId, sample.timeSource, sample.timerControlBefore, sample.timerControlAfter, sample.timerAccess);
+      ARMCPU_REPORT_LOG ("ArmCpu: timer-virtual-before cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.virtualBefore.status, sample.virtualBefore.first, sample.virtualBefore.last);
+      ARMCPU_REPORT_LOG ("ArmCpu: timer-virtual-after cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.virtualAfter.status, sample.virtualAfter.first, sample.virtualAfter.last);
+      ARMCPU_REPORT_LOG ("ArmCpu: timer-physical-after cpu=%u state=%u first=%llu last=%llu\n", self->logicalId, sample.physicalAfter.status, sample.physicalAfter.first, sample.physicalAfter.last);
       if (sample.badStage)
-        IOLog ("ArmCpu: cycle-clock-bad-time cpu=%u stage=%u previous=%llu current=%llu\n",
+        ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-bad-time cpu=%u stage=%u previous=%llu current=%llu\n",
                self->logicalId, sample.badStage, sample.badPrevious, sample.badCurrent);
       state.sampleReported = true;
     }
@@ -687,13 +692,18 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
       uint64_t now;
       clock_get_uptime (&now);
       if (state.expired (now, deadline)) {
-        IOLog ("ArmCpu: cycle-clock-incomplete cpu=%u start=%u sample=%u\n", self->logicalId, static_cast<unsigned> (state.startReported), static_cast<unsigned> (state.sampleReported));
+        ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-incomplete cpu=%u start=%u sample=%u\n", self->logicalId, static_cast<unsigned> (state.startReported), static_cast<unsigned> (state.sampleReported));
         break;
       }
+      if (!ml_get_interrupts_enabled ()) { armcpu_cycle_reporter_failed[self->logicalId] = 2; break; }
       IOSleep (100);
       state.waited ();
     }
   }
+#undef ARMCPU_REPORT_LOG
+  // This standalone thread holds no driver locks; termination can block and
+  // therefore must not inherit a disabled interrupt state on the error path.
+  if (!ml_get_interrupts_enabled ()) ml_set_interrupts_enabled (true);
 #else
   (void) argument;
 #endif
@@ -778,8 +788,8 @@ void ArmCpu::initCPU (bool boot)
       uint64_t timerControlAfter, timerAccess;
       __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (timerControlAfter));
       __asm__ volatile ("mrs %0, cntkctl_el1" : "=r" (timerAccess));
-      ArmCpuTimerProbe virtualAfter = armcpu_timer_probe(registers, 0);
-      ArmCpuTimerProbe physicalAfter = armcpu_timer_probe(registers, 1);
+      ArmCpuTimerProbe virtualAfter, physicalAfter;
+      armcpu_probe_timer_sources(registers, virtualAfter, physicalAfter);
       ArmCpuCycleSample sample = {};
       unsigned selected = armcpu_timer_select(virtualAfter, physicalAfter);
       if (selected) {

@@ -3,6 +3,9 @@
 #include <cassert>
 
 int main() {
+  int writes = 0;
+  assert(!armcpu_report_if_irq(false, [&] { ++writes; }) && writes == 0);
+  assert(armcpu_report_if_irq(true, [&] { ++writes; }) && writes == 1);
   ArmCpuCycleReportState state = {};
   assert(!state.done() && !state.expired(14999, 15000));
   assert(state.expired(15000, 15000));

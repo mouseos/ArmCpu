@@ -4,12 +4,12 @@
 struct Fake {
   uint64_t ver=1, freq=26000000, control=8, enables=0, filters=0, counter=123, now=0;
   uint64_t irq=0, flags=0, step=100, cycleStep=10000;
-  unsigned writes=0, reads=0, regressAt=0; bool running=false, stuck=false, noCycles=false;
+  unsigned writes=0, reads=0, regressAt=0, stuckAt=0; bool running=false, stuck=false, noCycles=false;
   uint64_t id(){return ver<<8;} uint64_t frequency(){return freq;} uint64_t pmcr(){return control;}
   uint64_t interrupts(){return irq;} uint64_t overflow(){return flags;}
   void clear_overflow(uint64_t x){flags &= ~x; ++writes;}
   uint64_t enabled(){return enables;} uint64_t filter(){return filters;} uint64_t cycle(){return counter;}
-  uint64_t time(){++reads; if(reads==regressAt){now-=3; return now;} if(!stuck){now+=step; if(running && !noCycles) { counter+=cycleStep; if(counter > 0xffffffffULL) { flags |= 1ULL<<31; counter &= 0xffffffffULL; } }} return now;}
+  uint64_t time(){++reads; if(reads==regressAt){now-=3; return now;} if(!stuck && (!stuckAt || reads<stuckAt)){now+=step; if(running && !noCycles) { counter+=cycleStep; if(counter > 0xffffffffULL) { flags |= 1ULL<<31; counter &= 0xffffffffULL; } }} return now;}
   void set_cycle(uint64_t x){counter=x; ++writes;} void set_pmcr(uint64_t x){control=x; ++writes;}
   void enable_cycle(){running=true; ++writes;} void disable_cycle(){running=false; ++writes;} void barrier(){}
 };
@@ -31,6 +31,8 @@ int main(){
   Fake endBackwards; endBackwards.step=26000; endBackwards.regressAt=4; auto eb=armcpu_cycle_sample(endBackwards); assert(eb.status==9 && eb.badStage==3 && eb.badPrevious-eb.badCurrent==3 && !endBackwards.running);
   Fake wrapTime; wrapTime.now=UINT64_MAX-200; assert(armcpu_cycle_sample(wrapTime).status==0);
   Fake zero; zero.noCycles=true; assert(armcpu_cycle_sample(zero).status==5 && zero.counter==123 && zero.control==8 && !zero.running);
+  Fake stalledAfterStart; stalledAfterStart.stuckAt=3; auto stalledSample=armcpu_cycle_sample(stalledAfterStart); assert(stalledSample.status==4 && stalledAfterStart.reads==4099 && stalledAfterStart.counter==123 && !stalledAfterStart.running);
+  Fake slowLimit; slowLimit.freq=1000000000; slowLimit.step=1; slowLimit.cycleStep=1; auto limitSample=armcpu_cycle_sample(slowLimit); assert(limitSample.status==4 && slowLimit.reads==262147 && slowLimit.counter==123 && !slowLimit.running);
   Fake reset; reset.control=14; assert(armcpu_cycle_sample(reset).status==0 && reset.control==8);
   Fake z; z.stuck=true; assert(armcpu_cycle_sample(z).status==4 && z.counter==123 && z.control==8 && !z.running);
   puts("PASS: measurement, restoration, interrupt/overflow refusal, wrap, elapsed limit and timeout");
