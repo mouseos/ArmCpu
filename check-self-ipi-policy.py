@@ -4,12 +4,12 @@ from pathlib import Path
 import subprocess,tempfile
 s=(Path(__file__).parent/'ArmCpu.cpp').read_text();start=s[s.index('bool ArmCpu::start ('):s.index('void ArmCpu::drainPending')]
 secondary=start[start.index('  if (secondary) {'):start.index('  } else {')]
-assert not any(x in secondary for x in ('gSelfIpi =','gSpiIpi =','diagnosePower ='))
+assert not any(x in secondary for x in ('gSelfIpi =','gSpiIpi ='))
 a=start.index('    unsigned selfIpi = 0;');b=start.index('    uint64_t bootMpidr;',a);policy=start[a:b]
 a=start.index('    if (gGicV2) {',b);b=start.index('\n    }',a)+6;v2=start[a:b]
 h=r'''#include <cassert>
 #include <cstring>
-static bool gSelfIpi,gSpiIpi,diagnosePower,gGicV2;
+static bool gSelfIpi,gSpiIpi,gGicV2;
 static bool givenSelf,givenSpi;static unsigned selfArg,spiArg;
 static bool PE_parse_boot_argn(const char *name,void *out,unsigned size){
  assert(size==sizeof(unsigned));if(!strcmp(name,"armcpu-self-ipi")){if(givenSelf)*(unsigned*)out=selfArg;return givenSelf;}

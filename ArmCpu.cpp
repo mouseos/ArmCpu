@@ -484,6 +484,9 @@ bool ArmCpu::start (IOService *provider)
   unsigned skip = 0;
   PE_parse_boot_argn ("armcpu-skip-gic", &skip, sizeof (skip));
   skipGic = skip != 0;
+  unsigned diagnostic = 0;
+  PE_parse_boot_argn ("armcpu-diagnostics", &diagnostic, sizeof (diagnostic));
+  diagnosePower = diagnostic == 1; // per CPU instance
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
   memcpy (&physical, reg->getBytesNoCopy (), sizeof (physical));
@@ -509,9 +512,6 @@ bool ArmCpu::start (IOService *provider)
     unsigned spiIpi = 0;
     PE_parse_boot_argn ("armcpu-spi-ipi", &spiIpi, sizeof (spiIpi));
     gSpiIpi = spiIpi == 1;
-    unsigned diagnostic = 0;
-    PE_parse_boot_argn ("armcpu-diagnostics", &diagnostic, sizeof (diagnostic));
-    diagnosePower = diagnostic == 1;
     uint64_t bootMpidr;
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (bootMpidr));
     armcpu_boot_mpidr = static_cast<uint32_t> (bootMpidr);
