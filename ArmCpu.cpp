@@ -682,8 +682,8 @@ void ArmCpu::initCPU (bool boot)
     if (gGicV2 && diagnoseCycleClock) {
       ArmCpuCycleRegisters registers;
       ArmCpuCycleSample sample = armcpu_cycle_sample(registers);
-      IOLog("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx\n",
-            logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter);
+      IOLog("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
+            logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
     }
 #endif
     if (!gRemoteGic && !wakeRedistributor (true)) { armcpu_smp_fail[logicalId] = 2; for (;;) { __asm__ volatile ("wfe"); } }

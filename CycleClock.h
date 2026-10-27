@@ -5,7 +5,7 @@
 // One calling CPU, before interrupts are enabled. Refuse an already owned PMU.
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
-struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter; unsigned status; };
+struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks; unsigned status; };
 template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
 {
   ArmCpuCycleSample s = {};
@@ -27,13 +27,15 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   r.set_pmcr((original & ~(8ULL | 64ULL)) | 1);
   r.enable_cycle();
   r.barrier();
-  const uint64_t begin = r.time();
+  const uint64_t beginBefore = r.time();
   const uint64_t cyclesBegin = r.cycle();
-  uint64_t end = begin;
+  const uint64_t beginAfter = r.time();
+  uint64_t endBefore = beginAfter;
   unsigned count = 0;
   const uint64_t target = s.frequency / 1000; // about one millisecond
-  while ((end - begin) < target && count++ < 10000000) { end = r.time(); }
+  while ((endBefore - beginAfter) < target && count++ < 10000000) { endBefore = r.time(); }
   const uint64_t cyclesEnd = r.cycle();
+  const uint64_t endAfter = r.time();
   r.disable_cycle();
   r.barrier();
   s.overflowAfter = r.overflow();
@@ -41,9 +43,14 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   r.set_pmcr(original);
   r.set_cycle(saved);
   r.barrier();
-  s.ticks = end - begin;
+  s.beginReadTicks = beginAfter - beginBefore;
+  s.endReadTicks = endAfter - endBefore;
+  s.outerTicks = endAfter - beginBefore;
+  // Midpoints estimate the timestamps of the two PMU reads. The full outer
+  // interval bounds both reads and therefore also their true separation.
+  s.ticks = (endBefore - beginBefore) + s.endReadTicks / 2 - s.beginReadTicks / 2;
   s.cycles = static_cast<uint32_t>(cyclesEnd - cyclesBegin);
-  s.status = s.ticks < target ? 4 : s.ticks > target * 2 ? 6 :
+  s.status = s.outerTicks > target * 2 ? 6 : (endBefore - beginAfter) < target ? 4 :
              (s.overflowAfter & (1ULL << 31)) ? 7 : s.cycles == 0 ? 5 : 0;
   if (s.status) s.cycles = 0;
   return s;
