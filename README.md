@@ -48,9 +48,7 @@ counter on each secondary during `initCPU`, before enabling interrupts. The
 completed sample and that core's MPIDR are published to an independent,
 interrupts-enabled reporter thread. It reports `cycle-clock-start` with the
 `processor_start` result and the startup thread's interrupt state before and
-after the call. It emits `cycle-clock-pending` initially and every five seconds
-while either the start result or sample remains unavailable, and continues to
-wait for a late sample even after a start failure. A startup-thread creation
+after the call. It waits at most 15 seconds (or 150 polling sleeps) for both results, then logs `cycle-clock-incomplete` once and exits. Published results remain in their mailboxes even if they arrive later; no late UART report is emitted. A startup-thread creation
 failure is reported as result -1000. A reporter-thread creation failure is
 recorded in `armcpu_cycle_reporter_failed` and logged if interrupts are enabled.
 Neither incomplete samples nor unreturned start calls are treated as success.
@@ -65,7 +63,7 @@ later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
 3 PMU already enabled, cycle filtering active, or any interrupt or overflow
 flag already set; 4 timer timeout; 5 zero cycles; 6 elapsed time exceeds 2 ms;
 7 cycle-counter overflow; and 8 the sum of the two PMU read brackets
-exceeds 1% of the target interval (rounded down to whole timer ticks); 9 a consecutive timer step moves backwards (a modular delta greater than half the 64-bit range). Status 9 also reports zero ticks. `cycle-clock-time` reports the four raw CNTVCT readings for diagnosis. Failed samples report zero cycles. The diagnostic
+exceeds 1% of the target interval (rounded down to whole timer ticks); 9 a consecutive timer step moves backwards (a modular delta greater than half the 64-bit range). Status 9 also reports zero ticks. `cycle-clock-time` reports the four raw CNTVCT readings; `cycle-clock-bad-time` records the first backward pair and its stage (1 initial bracket, 2 polling, 3 final bracket). The report is split into short lines to reduce serial interleaving. Failed samples report zero cycles. The diagnostic
 uses the 32-bit counter mode, rejects overflow, clears only its newly generated
 cycle overflow flag, and restores the previous PMCR and counter. The 2 ms
 bound is measured using CNTFRQ and CNTVCT over the outer timer readings enclosing both

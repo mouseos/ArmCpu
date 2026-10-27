@@ -6,6 +6,7 @@
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSSymbol.h>
 #include <machine/machine_routines.h>
+#include <kern/clock.h>
 #include <pexpert/pexpert.h>
 #include "CycleClock.h"
 
@@ -653,6 +654,8 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
 #if ARMCPU_GICV2
   ArmCpu *self = static_cast<ArmCpu *> (argument);
   ArmCpuCycleReportState state = {};
+  uint64_t deadline;
+  clock_interval_to_deadline (15, 1000000000, &deadline);
   // Ordinary kernel thread continuations enter with interrupts enabled. The
   // independent reporter can run even if processor_start never returns.
   while (!state.done ()) {
@@ -663,16 +666,28 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
     }
     ArmCpuCycleSample sample; uint64_t mpidr;
     if (!state.sampleReported && self->cycleMailbox.read (sample, mpidr)) {
-      IOLog ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
-             self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
-      IOLog ("ArmCpu: cycle-clock-time cpu=%u begin_before=%llu begin_after=%llu end_before=%llu end_after=%llu\n",
+      IOLog ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu\n",
+             self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles);
+      IOLog ("ArmCpu: cycle-clock-pmu cpu=%u pmcr=%llx filter=%llx interrupts=%llx overflow=%llx after=%llx\n",
+             self->logicalId, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter);
+      IOLog ("ArmCpu: cycle-clock-window cpu=%u outer=%llu begin=%llu end=%llu\n",
+             self->logicalId, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
+      IOLog ("ArmCpu: cycle-clock-time cpu=%u before=%llu after=%llu end_before=%llu end_after=%llu\n",
              self->logicalId, sample.beginBefore, sample.beginAfter, sample.endBefore, sample.endAfter);
+      if (sample.badStage)
+        IOLog ("ArmCpu: cycle-clock-bad-time cpu=%u stage=%u previous=%llu current=%llu\n",
+               self->logicalId, sample.badStage, sample.badPrevious, sample.badCurrent);
       state.sampleReported = true;
     }
     if (!state.done ()) {
-      if (state.pendingDue ())
-        IOLog ("ArmCpu: cycle-clock-pending cpu=%u start=%u sample=%u\n", self->logicalId, static_cast<unsigned> (state.startReported), static_cast<unsigned> (state.sampleReported));
+      uint64_t now;
+      clock_get_uptime (&now);
+      if (state.expired (now, deadline)) {
+        IOLog ("ArmCpu: cycle-clock-incomplete cpu=%u start=%u sample=%u\n", self->logicalId, static_cast<unsigned> (state.startReported), static_cast<unsigned> (state.sampleReported));
+        break;
+      }
       IOSleep (100);
+      state.waited ();
     }
   }
 #else

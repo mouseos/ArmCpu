@@ -5,7 +5,7 @@
 // One calling CPU, before interrupts are enabled. Refuse an already owned PMU.
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
-struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter; unsigned status; };
+struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter, badPrevious, badCurrent; unsigned status, badStage; };
 
 // Single producer (the secondary) and single consumer (its reporter thread).
 // Publish only once, after every field including the actual MPIDR is stored.
@@ -47,7 +47,8 @@ struct ArmCpuCycleReportState {
   bool startReported, sampleReported;
   unsigned waits;
   bool done() const { return startReported && sampleReported; }
-  bool pendingDue() { return waits++ % 50 == 0; }
+  bool expired(uint64_t now, uint64_t deadline) const { return now >= deadline || waits >= 150; }
+  void waited() { ++waits; }
 };
 template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
 {
@@ -81,9 +82,12 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   // A small backward jump becomes a huge unsigned delta. Reject it before
   // accepting it as a completed interval; modular wrap remains supported.
   invalidTime = (beginAfter - beginBefore) > UINT64_MAX / 2;
+  if (invalidTime) { s.badPrevious = beginBefore; s.badCurrent = beginAfter; s.badStage = 1; }
   while (!invalidTime && (endBefore - beginAfter) < target && count++ < 10000000) {
     endBefore = r.time();
-    if (endBefore - previous > UINT64_MAX / 2) invalidTime = true;
+    if (endBefore - previous > UINT64_MAX / 2) {
+      invalidTime = true; s.badPrevious = previous; s.badCurrent = endBefore; s.badStage = 2;
+    }
     previous = endBefore;
   }
   const uint64_t cyclesEnd = r.cycle();
@@ -97,7 +101,9 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
   r.barrier();
   s.beginBefore = beginBefore; s.beginAfter = beginAfter;
   s.endBefore = endBefore; s.endAfter = endAfter;
-  invalidTime = invalidTime || endAfter - endBefore > UINT64_MAX / 2;
+  if (!invalidTime && endAfter - endBefore > UINT64_MAX / 2) {
+    invalidTime = true; s.badPrevious = endBefore; s.badCurrent = endAfter; s.badStage = 3;
+  }
   s.beginReadTicks = beginAfter - beginBefore;
   s.endReadTicks = endAfter - endBefore;
   s.outerTicks = endAfter - beginBefore;
