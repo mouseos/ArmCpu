@@ -22,11 +22,11 @@ bool ml_set_interrupts_enabled(bool v){bool old=irq;irq=v;return old;}
 '''
 mid=r'''
 alignas(8) uint8_t mem[4096]{};uintptr_t gDist=reinterpret_cast<uintptr_t>(mem);bool gGicV2=true;uint32_t armcpu_gic_ready=1;uint64_t gBootAffinity=2;
-bool rejectGroup=false,rejectEnable=false;uint32_t lastMask=0;
+bool rejectGroup=false,rejectEnable=false,rejectMask=false;uint32_t lastMask=0;uint64_t armcpu_spi_mask_failures=0;uint32_t armcpu_spi_mask_failed_id=0;
 uint32_t read32(uintptr_t p,unsigned o){return *reinterpret_cast<uint32_t*>(p+o);}
 void write32(uintptr_t p,unsigned o,uint32_t v){
  auto reg=reinterpret_cast<uint32_t*>(p+o);
- if(o>=0x180 && o<0x200){lastMask=v;*reinterpret_cast<uint32_t*>(p+o-0x80)&=~v;}
+ if(o>=0x180 && o<0x200){lastMask=v;if(rejectMask)*reinterpret_cast<uint32_t*>(p+o-0x80)|=v;else *reinterpret_cast<uint32_t*>(p+o-0x80)&=~v;}
  else if(o>=0x100 && o<0x180){if(!rejectEnable)*reg|=v;}
  else if(o>=0x80 && o<0x100 && rejectGroup){}
  else *reg=v;
@@ -37,6 +37,11 @@ post=r'''
 int main(){*reinterpret_cast<uint32_t*>(gDist+4)=7;uint32_t pol=0x100,rb=0;uint64_t target=0;bool installed=false;uint32_t bit=1u<<14;
  rejectGroup=true;assert(armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed)==kIOReturnNotReady);
  assert(!installed && pol==0x100 && lastMask==bit && gSpiUsed==0);
+ // A failed rollback mask still publishes a permanent handler and records the failure.
+ rejectMask=true;lastMask=0;assert(armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed)==kIOReturnNotReady);
+ assert(installed && armcpu_spi_mask_failures==1 && armcpu_spi_mask_failed_id==110 && pol==0x100);
+ assert(!armcpu_spi_mask_owned(110,handler,nullptr) && armcpu_spi_mask_failures==2);
+ rejectMask=false;write32(gDist,0x18c,bit);gSpiUsed=0;gSpi[0]={};
  rejectGroup=false;rejectEnable=true;lastMask=0;assert(armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed)==kIOReturnNotReady);
  assert(installed && pol==0x100 && lastMask==bit && gSpiUsed==1);
  // Published-but-masked slot remains owned; wrong handler cannot disable it.

@@ -99,3 +99,10 @@ owned or enabled SPI, validates group, priority, target, trigger and polarity,
 and masks that SPI plus restores its previous configuration on failure. The
 owned-only mask operation is safe from primary interrupt context. All SYSIRQ
 writers must use the same controller management for serialization to apply.
+
+The checked registration rollback and the owned mask operation read the
+ISENABLER bit after ICENABLER. An unconfirmed mask is recorded in
+`armcpu_spi_mask_failures` and `armcpu_spi_mask_failed_id` and is not reported
+as successful. If rollback cannot mask a source, the published handler and
+its state remain alive. This lock coordinates only users of this API; an
+unrelated writer that bypasses it can still race on the SYSIRQ polarity word.

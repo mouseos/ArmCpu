@@ -248,6 +248,11 @@ static uint64_t gBootAffinity = 0;
 extern "C" {
 volatile uint64_t armcpu_spi_unhandled = 0;
 volatile uint32_t armcpu_spi_unhandled_id = 0;
+#if ARMCPU_SPI_SERIALIZE
+// Counts and last INTID whose ICENABLER write did not read back disabled.
+volatile uint64_t armcpu_spi_mask_failures = 0;
+volatile uint32_t armcpu_spi_mask_failed_id = 0;
+#endif
 }
 
 IOService *ArmCpu::probe (IOService *provider, SInt32 *score)
@@ -1240,6 +1245,17 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
     // W1C masks only this SPI. Do it before restoring the polarity.
     write32 (gDist, 0x180 + word, bit);
     __asm__ volatile ("dsb sy" ::: "memory");
+    if (read32 (gDist, 0x100 + word) & bit) {
+      __atomic_fetch_add (&armcpu_spi_mask_failures, 1, __ATOMIC_RELAXED);
+      __atomic_store_n (&armcpu_spi_mask_failed_id, intid, __ATOMIC_RELAXED);
+      // An unmasked line must have a handler even when setup failed before
+      // publishing one. Its owner keeps its state and suppresses the source.
+      if (!*installed) {
+        gSpi[used] = {intid, handler, context, 0};
+        __atomic_store_n (&gSpiUsed, used + 1, __ATOMIC_RELEASE);
+        *installed = true;
+      }
+    }
     *polarity = (*polarity & ~polBit) | (oldPol & polBit);
     write32 (gDist, 0x80 + word, (read32 (gDist, 0x80 + word) & ~bit) | (oldGroup & bit));
     write32 (gDist, cfg, (read32 (gDist, cfg) & ~(1u << shift)) | (oldCfg & (1u << shift)));
@@ -1260,9 +1276,13 @@ extern "C" bool armcpu_spi_mask_owned (uint32_t intid, void (*handler) (void *),
   uint32_t used = __atomic_load_n (&gSpiUsed, __ATOMIC_ACQUIRE);
   for (uint32_t i = 0; gDist && i < used; ++i) {
     if (gSpi[i].id == intid && gSpi[i].handler == handler && gSpi[i].context == context) {
-      write32 (gDist, 0x180 + (intid / 32) * 4, 1u << (intid % 32));
+      uint32_t word = (intid / 32) * 4, bit = 1u << (intid % 32);
+      write32 (gDist, 0x180 + word, bit);
       __asm__ volatile ("dsb sy" ::: "memory");
-      return true;
+      if (!(read32 (gDist, 0x100 + word) & bit)) return true;
+      __atomic_fetch_add (&armcpu_spi_mask_failures, 1, __ATOMIC_RELAXED);
+      __atomic_store_n (&armcpu_spi_mask_failed_id, intid, __ATOMIC_RELAXED);
+      return false;
     }
   }
   return false;

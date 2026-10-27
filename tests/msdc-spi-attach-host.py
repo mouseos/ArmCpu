@@ -23,6 +23,7 @@ thread_local bool irq=true;
 bool ml_set_interrupts_enabled(bool b){bool old=irq;irq=b;return old;}
 '''
 mid=r'''
+uint64_t armcpu_spi_mask_failures=0;uint32_t armcpu_spi_mask_failed_id=0;
 uint64_t gBootAffinity=2; alignas(8) uint8_t memory[0x1000]{};
 uintptr_t gDist=reinterpret_cast<uintptr_t>(memory); uint32_t armcpu_gic_ready=1; bool gGicV2=true;
 uint32_t read32(uintptr_t p,unsigned o){return *reinterpret_cast<uint32_t*>(p+o);}
