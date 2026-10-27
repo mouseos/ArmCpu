@@ -46,14 +46,19 @@ registers can only be programmed by the core that owns them.
 With GICv2 and `sheng-smp=1`, `armcpu-cycle-clock=1` samples the PMU cycle
 counter on each secondary during `initCPU`, before enabling interrupts. The
 UART line `ArmCpu: cycle-clock` reports CPU, status, CNTFRQ, timer ticks,
-cycle delta and the original PMCR and cycle filter. For status 0 the mean
+cycle delta, actual MPIDR, original PMCR, cycle filter, interrupt enables,
+and overflow flags before and after measurement. For status 0 the mean
 active-cycle frequency in Hz is `cycles * cntfrq / ticks`; it is a roughly
 1 ms busy-loop observation, not a guarantee of the clock under idle or a
 later workload. Status 1 means no advertised PMU, 2 invalid timer frequency,
-3 PMU already enabled or cycle filtering active, 4 timer timeout and 5 zero
-cycles. A disabled PMU's counter value and control are restored. The boot CPU
-is deliberately excluded: its EL2 PMU trap state is not established. EL1
-PMU accesses on secondaries and any higher-EL security restrictions still
-require hardware validation; a trap can prevent startup before a line is
+3 PMU already enabled, cycle filtering active, or any interrupt or overflow
+flag already set; 4 timer timeout; 5 zero cycles; 6 elapsed time exceeds 2 ms;
+and 7 cycle-counter overflow. Failed samples report zero cycles. The diagnostic
+uses the 32-bit counter mode, rejects overflow, clears only its newly generated
+cycle overflow flag, and restores the previous PMCR and counter. The 2 ms
+bound is measured using CNTFRQ and applies to the sampled timer interval.
+The core MPIDR is checked before any PMU access. The boot CPU is deliberately
+excluded. EL2 and EL3 PMU trap and security restrictions are not established;
+EL1 PMU access on secondaries still requires hardware validation; a trap can prevent startup before a line is
 printed. Use the existing watchdog and fastboot recovery path for an experiment.
 The diagnostic is absent unless the boot argument is explicitly set to 1.

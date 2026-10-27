@@ -654,6 +654,9 @@ struct ArmCpuCycleRegisters {
   uint64_t frequency() { uint64_t v; __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (v)); return v; }
   uint64_t pmcr() { uint64_t v; __asm__ volatile ("mrs %0, pmcr_el0" : "=r" (v)); return v; }
   uint64_t enabled() { uint64_t v; __asm__ volatile ("mrs %0, pmcntenset_el0" : "=r" (v)); return v; }
+  uint64_t interrupts() { uint64_t v; __asm__ volatile ("mrs %0, pmintenset_el1" : "=r" (v)); return v; }
+  uint64_t overflow() { uint64_t v; __asm__ volatile ("mrs %0, pmovsclr_el0" : "=r" (v)); return v; }
+  void clear_overflow(uint64_t v) { __asm__ volatile ("msr pmovsclr_el0, %0" :: "r" (v) : "memory"); }
   uint64_t filter() { uint64_t v; __asm__ volatile ("mrs %0, pmccfiltr_el0" : "=r" (v)); return v; }
   uint64_t cycle() { uint64_t v; __asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r" (v) :: "memory"); return v; }
   uint64_t time() { uint64_t v; __asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
@@ -669,20 +672,20 @@ void ArmCpu::initCPU (bool boot)
 {
   if (secondary) {
     if (!boot) { panic ("ArmCpu: secondary resume is unsupported"); }
-#if ARMCPU_GICV2
-    if (gGicV2 && diagnoseCycleClock) {
-      ArmCpuCycleRegisters registers;
-      ArmCpuCycleSample sample = armcpu_cycle_sample(registers);
-      IOLog("ArmCpu: cycle-clock cpu=%u status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx\n",
-            logicalId, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter);
-    }
-#endif
     armcpu_smp_step[logicalId] = 5;
     uint64_t mpidr;
     __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (mpidr));
     armcpu_smp_seen_mpidr[logicalId] = static_cast<uint32_t> (mpidr);
-    // A failure is recorded and the core parked (rather than a panic that hides the other cores' state).
-    if ((mpidr & 0xffff) != (affinity & 0xffff)) { armcpu_smp_fail[logicalId] = 1; for (;;) { __asm__ volatile ("wfe"); } }
+    // Verify the actual calling core before any PMU access.
+    if (((mpidr & 0xffffffULL) | ((mpidr >> 8) & 0xff000000ULL)) != (affinity & 0xffffffffULL)) { armcpu_smp_fail[logicalId] = 1; for (;;) { __asm__ volatile ("wfe"); } }
+#if ARMCPU_GICV2
+    if (gGicV2 && diagnoseCycleClock) {
+      ArmCpuCycleRegisters registers;
+      ArmCpuCycleSample sample = armcpu_cycle_sample(registers);
+      IOLog("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx\n",
+            logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter);
+    }
+#endif
     if (!gRemoteGic && !wakeRedistributor (true)) { armcpu_smp_fail[logicalId] = 2; for (;;) { __asm__ volatile ("wfe"); } }
     armcpu_smp_step[logicalId] = 6;
     enableGic ();
