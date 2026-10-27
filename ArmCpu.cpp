@@ -46,6 +46,7 @@ volatile uint32_t armcpu_smp_step[8], armcpu_smp_mpidr[8], armcpu_smp_seen_mpidr
 // System registers seen on each secondary core at initCPU entry: CurrentEL, SCTLR_EL1, TCR_EL1, MAIR_EL1 (low words), MIDR_EL1.
 volatile uint32_t armcpu_smp_sys[8][5], armcpu_boot_sys[5];
 volatile int32_t armcpu_smp_psci_rc[8];
+volatile uint32_t armcpu_cycle_reporter_failed[8];
 }
 
 #define ARMCPU_SMP_SLOTS 8
@@ -65,6 +66,7 @@ class ArmCpu : public IOCPU {
   bool diagnosePower = false;
   bool diagnoseCycleClock = false;
   ArmCpuCycleMailbox cycleMailbox = {};
+  ArmCpuCycleStart cycleStart = {};
   bool secondary = false;
   uint32_t logicalId = 0;
   bool mapGic (void);
@@ -75,6 +77,7 @@ class ArmCpu : public IOCPU {
   bool prepareGic (void);
   void startSecondary (void);
   static void startThread (void *argument, wait_result_t);
+  static void cycleReportThread (void *argument, wait_result_t);
   void enableGic (void);
   void interrupt (void);
   static void dispatch (void *target, void *, void *, int);
@@ -635,34 +638,66 @@ void ArmCpu::startThread (void *argument, wait_result_t)
 {
   ArmCpu *self = static_cast<ArmCpu *> (argument);
   armcpu_smp_step[self->logicalId] = 3;
+  bool irqBefore = ml_get_interrupts_enabled ();
   kern_return_t result = processor_start (self->machProcessor);
 #if ARMCPU_GICV2
-  // processor_start can return before initCPU runs. Wait only in this helper
-  // thread, with a bound for a core that never reaches or completes sampling.
-  ArmCpuCycleSample sample;
-  uint64_t mpidr;
-  bool ready = false;
-  if (result == KERN_SUCCESS && gGicV2 && self->diagnoseCycleClock && ml_get_interrupts_enabled ()) {
-    for (unsigned attempt = 0; attempt < 500; attempt++) {
-      if ((ready = self->cycleMailbox.read (sample, mpidr))) break;
-      IOSleep (10);
-    }
-    if (!ready) ready = self->cycleMailbox.read (sample, mpidr);
-  }
-  if (ready && ml_get_interrupts_enabled ()) {
-    IOLog("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
-          self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
-  }
+  if (gGicV2 && self->diagnoseCycleClock)
+    self->cycleStart.publish (result, irqBefore, ml_get_interrupts_enabled ());
 #endif
-  (void) result;
+  (void) result; (void) irqBefore;
+  thread_terminate (current_thread ());
+}
+
+void ArmCpu::cycleReportThread (void *argument, wait_result_t)
+{
+#if ARMCPU_GICV2
+  ArmCpu *self = static_cast<ArmCpu *> (argument);
+  ArmCpuCycleReportState state = {};
+  // Ordinary kernel thread continuations enter with interrupts enabled. The
+  // independent reporter can run even if processor_start never returns.
+  while (!state.done ()) {
+    int result; unsigned before, after;
+    if (!state.startReported && self->cycleStart.read (result, before, after)) {
+      IOLog ("ArmCpu: cycle-clock-start cpu=%u result=%d irq_before=%u irq_after=%u\n", self->logicalId, result, before, after);
+      state.startReported = true;
+    }
+    ArmCpuCycleSample sample; uint64_t mpidr;
+    if (!state.sampleReported && self->cycleMailbox.read (sample, mpidr)) {
+      IOLog ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu pmcr=%llx filter=%llx interrupts=%llx overflow=%llx overflow_after=%llx outer_ticks=%llu begin_read_ticks=%llu end_read_ticks=%llu\n",
+             self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles, sample.pmcr, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter, sample.outerTicks, sample.beginReadTicks, sample.endReadTicks);
+      state.sampleReported = true;
+    }
+    if (!state.done ()) {
+      if (state.pendingDue ())
+        IOLog ("ArmCpu: cycle-clock-pending cpu=%u start=%u sample=%u\n", self->logicalId, static_cast<unsigned> (state.startReported), static_cast<unsigned> (state.sampleReported));
+      IOSleep (100);
+    }
+  }
+#else
+  (void) argument;
+#endif
   thread_terminate (current_thread ());
 }
 
 void ArmCpu::startSecondary (void)
 {
   thread_t thread;
+#if ARMCPU_GICV2
+  if (gGicV2 && diagnoseCycleClock) {
+    if (kernel_thread_start (&ArmCpu::cycleReportThread, this, &thread) == KERN_SUCCESS) {
+      thread_deallocate (thread);
+    } else {
+      // Preserve boot recovery: a diagnostic allocation failure must not stop CPU_ON.
+      armcpu_cycle_reporter_failed[logicalId] = 1;
+      if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: cycle-clock-reporter cpu=%u error=thread-create\n", logicalId);
+    }
+  }
+#endif
   if (kernel_thread_start (&ArmCpu::startThread, this, &thread) != KERN_SUCCESS) {
     armcpu_smp_psci_rc[logicalId] = -1000;
+#if ARMCPU_GICV2
+    if (gGicV2 && diagnoseCycleClock) cycleStart.publish (-1000, ml_get_interrupts_enabled (), ml_get_interrupts_enabled ());
+#endif
     return;
   }
   thread_deallocate (thread);

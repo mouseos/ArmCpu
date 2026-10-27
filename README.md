@@ -45,10 +45,16 @@ registers can only be programmed by the core that owns them.
 
 With GICv2 and `sheng-smp=1`, `armcpu-cycle-clock=1` samples the PMU cycle
 counter on each secondary during `initCPU`, before enabling interrupts. The
-completed sample and that core's MPIDR are published to its startup thread,
-which waits up to five seconds after `processor_start` returns and reports
-them in an interrupts-enabled thread context. No line is emitted for an
-incomplete sample. The
+completed sample and that core's MPIDR are published to an independent,
+interrupts-enabled reporter thread. It reports `cycle-clock-start` with the
+`processor_start` result and the startup thread's interrupt state before and
+after the call. It emits `cycle-clock-pending` initially and every five seconds
+while either the start result or sample remains unavailable, and continues to
+wait for a late sample even after a start failure. A startup-thread creation
+failure is reported as result -1000. A reporter-thread creation failure is
+recorded in `armcpu_cycle_reporter_failed` and logged if interrupts are enabled.
+Neither incomplete samples nor unreturned start calls are treated as success.
+The
 UART line `ArmCpu: cycle-clock` reports CPU, status, CNTFRQ, timer ticks,
 cycle delta, actual MPIDR, original PMCR, cycle filter, interrupt enables,
 overflow flags before and after measurement, the enclosing timer interval,

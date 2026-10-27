@@ -7,7 +7,7 @@
 // timer frequency and both deltas remain independently inspectable.
 struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks; unsigned status; };
 
-// Single producer (the secondary) and single consumer (its start thread).
+// Single producer (the secondary) and single consumer (its reporter thread).
 // Publish only once, after every field including the actual MPIDR is stored.
 struct ArmCpuCycleMailbox {
   ArmCpuCycleSample sample;
@@ -24,6 +24,30 @@ struct ArmCpuCycleMailbox {
     cpuMpidr = mpidr;
     return true;
   }
+};
+
+// The startup worker publishes independently of the sampled CPU, including
+// the interrupt state that formerly caused silent loss of the report.
+struct ArmCpuCycleStart {
+  int result;
+  unsigned irqBefore, irqAfter, ready;
+  void publish(int value, bool before, bool after) {
+    result = value; irqBefore = before; irqAfter = after;
+    __atomic_store_n(&ready, 1U, __ATOMIC_RELEASE);
+  }
+  bool read(int &value, unsigned &before, unsigned &after) const {
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) return false;
+    value = result; before = irqBefore; after = irqAfter;
+    return true;
+  }
+};
+
+// Reporter-owned state: pending messages never retire either input.
+struct ArmCpuCycleReportState {
+  bool startReported, sampleReported;
+  unsigned waits;
+  bool done() const { return startReported && sampleReported; }
+  bool pendingDue() { return waits++ % 50 == 0; }
 };
 template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r)
 {
