@@ -48,6 +48,10 @@ volatile uint32_t armcpu_smp_step[8], armcpu_smp_mpidr[8], armcpu_smp_seen_mpidr
 volatile uint32_t armcpu_smp_sys[8][5], armcpu_boot_sys[5];
 volatile int32_t armcpu_smp_psci_rc[8];
 volatile uint32_t armcpu_cycle_reporter_failed[8];
+// Independent single-word controls: written on each secondary and read only
+// after the cycle mailbox release/acquire. No struct copy or variadic packing.
+volatile uint64_t armcpu_timer_raw_virtual[8], armcpu_timer_raw_physical[8];
+volatile uint32_t armcpu_timer_raw_flags[8];
 }
 
 #define ARMCPU_SMP_SLOTS 8
@@ -136,7 +140,7 @@ static void spiIpiSend (uintptr_t dist, uint32_t core)
 static uint64_t counter (void)
 {
   uint64_t value;
-  __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (value));
+  __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (value));
   return value;
 }
 
@@ -435,7 +439,7 @@ void ArmCpu::enableGic (void)
     write32 (gCpuIf, 8, 0);                                  // GICC_BPR
     write32 (gCpuIf, 0, (read32 (gCpuIf, 0) & ~(1U << 9)) | 1U); // GICC_CTLR: non-secure group on, EOImode 0
     write32 (dist, 0, read32 (dist, 0) | 1U);                // GICD_CTLR: non-secure group on
-    __asm__ volatile ("dsb sy; isb" ::: "memory");
+    __asm__ volatile ("dsb sy\n\tisb" ::: "memory");
     if (!secondary) {
       armcpu_gic_boot[0] = target;
       armcpu_gic_boot[1] = read32 (dist, 0x100);
@@ -452,7 +456,7 @@ void ArmCpu::enableGic (void)
   uint64_t value;
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   value |= 1;
-  __asm__ volatile ("msr icc_sre_el1, %0; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr icc_sre_el1, %0\n\tisb" :: "r" (value) : "memory");
   __asm__ volatile ("mrs %0, icc_sre_el1" : "=r" (value));
   if ((value & 1) == 0) { panic ("ArmCpu: GICv3 system register interface unavailable"); }
   __asm__ volatile ("mrs %0, icc_ctlr_el1" : "=r" (value));
@@ -468,7 +472,7 @@ void ArmCpu::enableGic (void)
     write32 (dist, 0, read32 (dist, 0) | 0x12U);
   }
   value = 1;
-  __asm__ volatile ("msr icc_igrpen1_el1, %0; dsb sy; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr icc_igrpen1_el1, %0\n\tdsb sy\n\tisb" :: "r" (value) : "memory");
   if (!secondary) {
     uint64_t pmr, ig, sre;
     __asm__ volatile ("mrs %0, icc_pmr_el1" : "=r" (pmr));
@@ -662,6 +666,20 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
     if (!armcpu_report_if_irq (ml_get_interrupts_enabled (), [&] { IOLog (__VA_ARGS__); })) \
       armcpu_cycle_reporter_failed[self->logicalId] = 2; \
   } while (0)
+  // Each control line has exactly one variadic integer and a literal CPU tag.
+#define ARMCPU_RAW_LOG(label, value) do { \
+    uint64_t raw_value = (value); \
+    switch (self->logicalId) { \
+    case 1: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu1 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    case 2: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu2 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    case 3: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu3 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    case 4: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu4 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    case 5: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu5 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    case 6: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu6 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    case 7: ARMCPU_REPORT_LOG ("ArmCpu: raw-cpu7 " label "=%016llx\n", static_cast<unsigned long long> (raw_value)); break; \
+    default: break; \
+    } \
+  } while (0)
   while (!state.done ()) {
     if (!ml_get_interrupts_enabled ()) { armcpu_cycle_reporter_failed[self->logicalId] = 2; break; }
     int result; unsigned before, after;
@@ -671,6 +689,11 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
     }
     ArmCpuCycleSample sample; uint64_t mpidr;
     if (!state.sampleReported && self->cycleMailbox.read (sample, mpidr)) {
+      // Independent direct-register controls, emitted before the struct report.
+      uint32_t rawFlags = __atomic_load_n (&armcpu_timer_raw_flags[self->logicalId], __ATOMIC_ACQUIRE);
+      ARMCPU_RAW_LOG ("format-control", 0x1122334455667788ULL);
+      if (rawFlags & 1) ARMCPU_RAW_LOG ("cntvct", __atomic_load_n (&armcpu_timer_raw_virtual[self->logicalId], __ATOMIC_RELAXED));
+      if (rawFlags & 2) ARMCPU_RAW_LOG ("cntpct", __atomic_load_n (&armcpu_timer_raw_physical[self->logicalId], __ATOMIC_RELAXED));
       ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock cpu=%u mpidr=%llx status=%u cntfrq=%llu ticks=%llu cycles=%llu\n",
              self->logicalId, mpidr, sample.status, sample.frequency, sample.ticks, sample.cycles);
       ARMCPU_REPORT_LOG ("ArmCpu: cycle-clock-pmu cpu=%u pmcr=%llx filter=%llx interrupts=%llx overflow=%llx after=%llx\n",
@@ -700,6 +723,7 @@ void ArmCpu::cycleReportThread (void *argument, wait_result_t)
       state.waited ();
     }
   }
+#undef ARMCPU_RAW_LOG
 #undef ARMCPU_REPORT_LOG
   // This standalone thread holds no driver locks; termination can block and
   // therefore must not inherit a disabled interrupt state on the error path.
@@ -737,7 +761,7 @@ void ArmCpu::startSecondary (void)
 #if ARMCPU_GICV2
 struct ArmCpuCycleRegisters {
   unsigned source = 0;
-  uint64_t counter(unsigned which) { uint64_t v; if (which == 0) __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r" (v) :: "memory"); else __asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
+  uint64_t counter(unsigned which) { uint64_t v; if (which == 0) __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (v) :: "memory"); else __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (v) :: "memory"); return v; }
   uint64_t id() { uint64_t v; __asm__ volatile ("mrs %0, id_aa64dfr0_el1" : "=r" (v)); return v; }
   uint64_t frequency() { uint64_t v; __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (v)); return v; }
   uint64_t pmcr() { uint64_t v; __asm__ volatile ("mrs %0, pmcr_el0" : "=r" (v)); return v; }
@@ -746,7 +770,7 @@ struct ArmCpuCycleRegisters {
   uint64_t overflow() { uint64_t v; __asm__ volatile ("mrs %0, pmovsclr_el0" : "=r" (v)); return v; }
   void clear_overflow(uint64_t v) { __asm__ volatile ("msr pmovsclr_el0, %0" :: "r" (v) : "memory"); }
   uint64_t filter() { uint64_t v; __asm__ volatile ("mrs %0, pmccfiltr_el0" : "=r" (v)); return v; }
-  uint64_t cycle() { uint64_t v; __asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r" (v) :: "memory"); return v; }
+  uint64_t cycle() { uint64_t v; __asm__ volatile ("isb\n\tmrs %0, pmccntr_el0" : "=r" (v) :: "memory"); return v; }
   uint64_t time() { return counter(source); }
   void set_cycle(uint64_t v) { __asm__ volatile ("msr pmccntr_el0, %0" :: "r" (v) : "memory"); }
   void set_pmcr(uint64_t v) { __asm__ volatile ("msr pmcr_el0, %0" :: "r" (v) : "memory"); }
@@ -788,8 +812,15 @@ void ArmCpu::initCPU (bool boot)
       uint64_t timerControlAfter, timerAccess;
       __asm__ volatile ("mrs %0, cntv_ctl_el0" : "=r" (timerControlAfter));
       __asm__ volatile ("mrs %0, cntkctl_el1" : "=r" (timerAccess));
+      uint64_t rawVirtual = registers.counter (0);
       ArmCpuTimerProbe virtualAfter, physicalAfter;
       armcpu_probe_timer_sources(registers, virtualAfter, physicalAfter);
+      uint64_t rawPhysical = 0;
+      uint32_t rawFlags = 1;
+      if (physicalAfter.status != 3) { rawPhysical = registers.counter (1); rawFlags |= 2; }
+      __atomic_store_n (&armcpu_timer_raw_virtual[logicalId], rawVirtual, __ATOMIC_RELAXED);
+      __atomic_store_n (&armcpu_timer_raw_physical[logicalId], rawPhysical, __ATOMIC_RELAXED);
+      __atomic_store_n (&armcpu_timer_raw_flags[logicalId], rawFlags, __ATOMIC_RELEASE);
       ArmCpuCycleSample sample = {};
       unsigned selected = armcpu_timer_select(virtualAfter, physicalAfter);
       if (selected) {
@@ -896,7 +927,7 @@ void ArmCpu::interrupt (void)
       write32 (gCpuIf, 0x10, v2Raw);                        // GICC_EOIR with the acknowledged value (source CPU kept)
       __asm__ volatile ("isb" ::: "memory");
     } else {
-      __asm__ volatile ("msr icc_eoir1_el1, %0; isb" :: "r" (id) : "memory");
+      __asm__ volatile ("msr icc_eoir1_el1, %0\n\tisb" :: "r" (id) : "memory");
     }
   }
 }
@@ -920,7 +951,7 @@ void ArmCpu::signalCPU (IOCPU *target)
     return;
   }
   if (gSpiIpi) { spiIpiSend (gDist, peer->logicalId & 7); return; }
-  __asm__ volatile ("dsb ishst; msr icc_sgi1r_el1, %0; isb" :: "r" (sgi) : "memory");
+  __asm__ volatile ("dsb ishst\n\tmsr icc_sgi1r_el1, %0\n\tisb" :: "r" (sgi) : "memory");
 }
 
 // Diagnostic: sends SGI 0 to the core whose MPIDR affinity is aff (the DT "reg" value, e.g. 0x100 for core 1) exactly as signalCPU
@@ -967,7 +998,7 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
   if (gGicV2) { for (unsigned i = 0; i < 10; i++) { out[i] = 0; } return; } // GICv3 system-register probe only
   uint64_t mpidr, daif, v;
   __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (mpidr));
-  __asm__ volatile ("mrs %0, daif; msr daifset, #2; isb" : "=r" (daif) :: "memory");
+  __asm__ volatile ("mrs %0, daif\n\tmsr daifset, #2\n\tisb" : "=r" (daif) :: "memory");
   for (unsigned i = 0; i < 10; i++) { out[i] = 0; }
   out[0] = mpidr;
   __asm__ volatile ("mrs %0, icc_pmr_el1" : "=r" (v)); out[3] = v;
@@ -980,8 +1011,8 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
     for (uint64_t intid = 0; intid < 16; intid++) {
       const uint64_t sgi = base | (intid << 24);
       uint64_t h = 1023, ta, tb;
-      __asm__ volatile ("dsb ishst; isb; mrs %0, cntvct_el0; isb" : "=r" (ta) :: "memory");
-      __asm__ volatile ("msr icc_sgi1r_el1, %0; isb; mrs %1, cntvct_el0" : "=r" (tb) : "r" (sgi) : "memory");
+      __asm__ volatile ("dsb ishst\n\tisb\n\tmrs %0, cntvct_el0\n\tisb" : "=r" (ta) :: "memory");
+      __asm__ volatile ("msr icc_sgi1r_el1, %0\n\tisb\n\tmrs %1, cntvct_el0" : "=r" (tb) : "r" (sgi) : "memory");
       if (intid == 0) { out[8] = tb - ta; }
       for (unsigned polls = 0; polls < 400; polls++) {
         __asm__ volatile ("mrs %0, icc_hppir1_el1" : "=r" (h));
@@ -991,10 +1022,10 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
       if ((h & 0xffffff) == intid) {
         out[1] |= 1ULL << intid;
         __asm__ volatile ("mrs %0, icc_iar1_el1" : "=r" (v));
-        __asm__ volatile ("msr icc_eoir1_el1, %0; isb" :: "r" (v) : "memory");
+        __asm__ volatile ("msr icc_eoir1_el1, %0\n\tisb" :: "r" (v) : "memory");
         continue;
       }
-      __asm__ volatile ("dsb ishst; msr icc_sgi0r_el1, %0; isb" :: "r" (sgi) : "memory");
+      __asm__ volatile ("dsb ishst\n\tmsr icc_sgi0r_el1, %0\n\tisb" :: "r" (sgi) : "memory");
       for (unsigned polls = 0; polls < 400; polls++) {
         __asm__ volatile ("mrs %0, icc_hppir0_el1" : "=r" (h));
         if ((h & 0xffffff) == intid) { break; }
@@ -1003,16 +1034,16 @@ extern "C" void armcpu_sgi_selfprobe (uint64_t *out)
       if ((h & 0xffffff) == intid) {
         out[2] |= 1ULL << intid;
         __asm__ volatile ("mrs %0, icc_iar0_el1" : "=r" (v));
-        __asm__ volatile ("msr icc_eoir0_el1, %0; isb" :: "r" (v) : "memory");
+        __asm__ volatile ("msr icc_eoir0_el1, %0\n\tisb" :: "r" (v) : "memory");
       }
     }
   }
   {
     uint64_t ta, tb;
-    __asm__ volatile ("isb; mrs %0, cntvct_el0; isb; mrs %2, icc_pmr_el1; isb; mrs %1, cntvct_el0" : "=r" (ta), "=r" (tb), "=r" (v) :: "memory");
+    __asm__ volatile ("isb\n\tmrs %0, cntvct_el0\n\tisb\n\tmrs %2, icc_pmr_el1\n\tisb\n\tmrs %1, cntvct_el0" : "=r" (ta), "=r" (tb), "=r" (v) :: "memory");
     out[9] = tb - ta;
   }
-  __asm__ volatile ("msr daif, %0; isb" :: "r" (daif) : "memory");
+  __asm__ volatile ("msr daif, %0\n\tisb" :: "r" (daif) : "memory");
 }
 
 extern "C" void armcpu_ipi_selftest (uint64_t aff)
@@ -1021,13 +1052,13 @@ extern "C" void armcpu_ipi_selftest (uint64_t aff)
   uint64_t sgi = ((aff & 0xff00000000ULL) << 16) | ((aff & 0xff0000) << 16) | ((aff & 0xff00) << 8) | (1ULL << (aff & 0xff));
   armcpu_ipi_selftest_sent = armcpu_ipi_selftest_sent + 1;
   if (gSpiIpi) { spiIpiSend (gDist, static_cast<uint32_t> ((aff >> 8) & 7)); return; }
-  __asm__ volatile ("dsb ishst; msr icc_sgi1r_el1, %0; isb" :: "r" (sgi) : "memory");
+  __asm__ volatile ("dsb ishst\n\tmsr icc_sgi1r_el1, %0\n\tisb" :: "r" (sgi) : "memory");
 }
 
 void ArmCpu::enableCPUTimeBase (bool enabled)
 {
   uint64_t value = enabled ? 1 : 2;
-  __asm__ volatile ("msr cntv_ctl_el0, %0; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr cntv_ctl_el0, %0\n\tisb" :: "r" (value) : "memory");
 }
 
 void ArmCpu::quiesceCPU (void)
@@ -1037,11 +1068,11 @@ void ArmCpu::quiesceCPU (void)
   enableCPUTimeBase (false);
   if (gGicV2) {
     write32 (gCpuIf, 0, read32 (gCpuIf, 0) & ~1U);
-    __asm__ volatile ("dsb sy; isb" ::: "memory");
+    __asm__ volatile ("dsb sy\n\tisb" ::: "memory");
     return;
   }
   uint64_t value = 0;
-  __asm__ volatile ("msr icc_igrpen1_el1, %0; dsb sy; isb" :: "r" (value) : "memory");
+  __asm__ volatile ("msr icc_igrpen1_el1, %0\n\tdsb sy\n\tisb" :: "r" (value) : "memory");
 }
 
 void ArmCpu::haltCPU (void)
@@ -1063,7 +1094,7 @@ static void cleanToMemory (const void *start, size_t length)
   uintptr_t line = static_cast<uintptr_t> (4) << ((ctr >> 16) & 15);
   uintptr_t address = reinterpret_cast<uintptr_t> (start) & ~(line - 1), end = reinterpret_cast<uintptr_t> (start) + length;
   for (; address < end; address += line) { __asm__ volatile ("dc civac, %0" :: "r" (address) : "memory"); }
-  __asm__ volatile ("dsb sy; isb" ::: "memory");
+  __asm__ volatile ("dsb sy\n\tisb" ::: "memory");
 }
 
 kern_return_t ArmCpu::startCPU (vm_offset_t, vm_offset_t)
