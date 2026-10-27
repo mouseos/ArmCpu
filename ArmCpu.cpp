@@ -226,6 +226,24 @@ static bool compatibleHas (OSData *compatible, const char *name)
 struct ArmCpuSpi {uint32_t id; void (*handler) (void *); void *context; volatile uint64_t count;};
 static ArmCpuSpi gSpi[ARMCPU_SPI_SLOTS];
 static volatile uint32_t gSpiUsed = 0;
+#ifndef ARMCPU_SPI_SERIALIZE
+#define ARMCPU_SPI_SERIALIZE 0
+#endif
+#if ARMCPU_SPI_SERIALIZE
+// Protect the registration table and GIC shared register RMWs against other
+// concurrent attachers; IRQ delivery never acquires this lock.
+static volatile uint32_t gSpiRegistrationLock = 0;
+struct SpiRegistrationGuard {
+  boolean_t irq;
+  SpiRegistrationGuard () : irq (ml_set_interrupts_enabled (false)) {
+    while (__atomic_exchange_n (&gSpiRegistrationLock, 1, __ATOMIC_ACQUIRE)) { }
+  }
+  ~SpiRegistrationGuard () {
+    __atomic_store_n (&gSpiRegistrationLock, 0, __ATOMIC_RELEASE);
+    ml_set_interrupts_enabled (irq);
+  }
+};
+#endif
 static uint64_t gBootAffinity = 0;
 extern "C" {
 volatile uint64_t armcpu_spi_unhandled = 0;
@@ -1136,6 +1154,9 @@ extern "C" IOReturn armcpu_spi_attach (uint32_t intid, bool edge, void (*handler
                                        uint32_t *readback, uint64_t *router)
 {
   if (gDist == 0 || armcpu_gic_ready == 0 || handler == nullptr) { return kIOReturnNotReady; }
+#if ARMCPU_SPI_SERIALIZE
+  SpiRegistrationGuard guard;
+#endif
   const unsigned interrupts = ((read32 (gDist, 4) & 31) + 1) * 32;
   if (intid < 32 || intid >= 1020 || intid >= interrupts) { return kIOReturnBadArgument; }
   const uint32_t used = __atomic_load_n (&gSpiUsed, __ATOMIC_ACQUIRE);
@@ -1170,6 +1191,83 @@ extern "C" IOReturn armcpu_spi_attach (uint32_t intid, bool edge, void (*handler
   }
   return kIOReturnSuccess;
 }
+
+#if ARMCPU_SPI_SERIALIZE
+// MTK's low-active input is inverted by SYSIRQ before the GIC. All users of
+// this API share the SPI registration lock for SYSIRQ and distributor RMWs.
+// The caller owns the mapping for the lifetime of any installed handler.
+extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *polarity,
+                                              void (*handler) (void *), void *context,
+                                              uint32_t *readback, uint64_t *router, bool *installed)
+{
+  if (installed) *installed = false;
+  if (!installed || !polarity || !handler || !gGicV2 || !gDist || !armcpu_gic_ready || !gBootAffinity)
+    return kIOReturnNotReady;
+  SpiRegistrationGuard guard;
+  uint32_t intid = spi + 32;
+  unsigned count = ((read32 (gDist, 4) & 31) + 1) * 32;
+  if (spi >= 256 || intid >= count || intid >= 1020) return kIOReturnBadArgument;
+  uint32_t used = __atomic_load_n (&gSpiUsed, __ATOMIC_ACQUIRE);
+  for (uint32_t i = 0; i < used; ++i)
+    if (gSpi[i].id == intid) return kIOReturnExclusiveAccess;
+  if (used >= ARMCPU_SPI_SLOTS) return kIOReturnNoResources;
+  uint32_t word = (intid / 32) * 4, bit = 1u << (intid % 32), polBit = 1u << (spi % 32);
+  if (read32 (gDist, 0x100 + word) & bit) return kIOReturnExclusiveAccess;
+  unsigned cfg = 0xc00 + (intid / 16) * 4, shift = (intid % 16) * 2 + 1;
+  uint32_t oldPol = *polarity, oldGroup = read32 (gDist, 0x80 + word), oldCfg = read32 (gDist, cfg);
+  uint8_t oldPriority = *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid);
+  uint8_t oldTarget = *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid);
+  *polarity = oldPol | polBit;
+  __asm__ volatile ("dsb sy" ::: "memory");
+  write32 (gDist, 0x80 + word, oldGroup | bit);
+  *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid) = 0xa0;
+  write32 (gDist, cfg, oldCfg & ~(1u << shift));
+  *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid) = static_cast<uint8_t> (gBootAffinity);
+  __asm__ volatile ("dsb sy" ::: "memory");
+  uint32_t group = read32 (gDist, 0x80 + word), currentCfg = read32 (gDist, cfg);
+  uint8_t priority = *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid);
+  uint8_t target = *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid);
+  bool valid = (*polarity & polBit) && (group & bit) && !(currentCfg & (1u << shift)) &&
+               priority == 0xa0 && target == static_cast<uint8_t> (gBootAffinity);
+  if (valid) {
+    gSpi[used] = {intid, handler, context, 0};
+    __atomic_store_n (&gSpiUsed, used + 1, __ATOMIC_RELEASE);
+    *installed = true;
+    write32 (gDist, 0x100 + word, bit);
+    valid = (read32 (gDist, 0x100 + word) & bit) != 0;
+  }
+  if (!valid) {
+    // W1C masks only this SPI. Do it before restoring the polarity.
+    write32 (gDist, 0x180 + word, bit);
+    __asm__ volatile ("dsb sy" ::: "memory");
+    *polarity = (*polarity & ~polBit) | (oldPol & polBit);
+    write32 (gDist, 0x80 + word, (read32 (gDist, 0x80 + word) & ~bit) | (oldGroup & bit));
+    write32 (gDist, cfg, (read32 (gDist, cfg) & ~(1u << shift)) | (oldCfg & (1u << shift)));
+    *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid) = oldPriority;
+    *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid) = oldTarget;
+    __asm__ volatile ("dsb sy" ::: "memory");
+    return kIOReturnNotReady;
+  }
+  if (readback) *readback = 3u | (uint32_t (priority) << 8);
+  if (router) *router = target;
+  return kIOReturnSuccess;
+}
+
+// Interrupt-safe: ICENABLER is write-one-to-clear and never changes another
+// SPI. Require the exact registered owner; no spin lock or blocking in IRQ.
+extern "C" bool armcpu_spi_mask_owned (uint32_t intid, void (*handler) (void *), void *context)
+{
+  uint32_t used = __atomic_load_n (&gSpiUsed, __ATOMIC_ACQUIRE);
+  for (uint32_t i = 0; gDist && i < used; ++i) {
+    if (gSpi[i].id == intid && gSpi[i].handler == handler && gSpi[i].context == context) {
+      write32 (gDist, 0x180 + (intid / 32) * 4, 1u << (intid % 32));
+      __asm__ volatile ("dsb sy" ::: "memory");
+      return true;
+    }
+  }
+  return false;
+}
+#endif
 
 extern "C" uint64_t armcpu_spi_count (uint32_t intid)
 {

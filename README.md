@@ -85,3 +85,17 @@ The diagnostic probes CNTVCT before and after enabling the virtual timer and pro
 ### ARM64 instruction separators
 
 Multi-instruction inline assembly uses newline separators, including the GICv2 redistributor wait counter, timer and PMU reads, virtual-timer enable, GIC barriers, GICv3 SGI and EOI paths, diagnostic register reads and interrupt masking, and cache-clean barriers. R4's recovered ArmCpu object contained consecutive ISBs with no counter MRS at the preflight reads; the emitted registers were therefore not established by those instructions. The changes restore the intended instructions, but their device effects remain unverified. For a compiled ArmCpu.o, `python3 tests/check-arm64-rea.py /absolute/path/ArmCpu.o` checks the actual initCPU object instructions with REA, including ISB immediately followed by each CNTVCT, CNTPCT and PMCCNTR MRS. This requires REA with its Ghidra provider.
+
+`ARMCPU_SPI_SERIALIZE=1` serializes concurrent SPI registrations with local
+interrupts masked. The default is off. This protects the registration table
+and distributor register read/modify/write between callers of
+`armcpu_spi_attach`; it does not configure a board SYSIRQ polarity controller
+or establish ownership against unrelated register writers. The handler runs
+in primary interrupt context and must clear or mask a level source.
+
+With `ARMCPU_SPI_SERIALIZE=1`, `armcpu_spi_attach_sysirq` also serializes
+MTK SYSIRQ polarity changes with GICv2 registration. It refuses a previously
+owned or enabled SPI, validates group, priority, target, trigger and polarity,
+and masks that SPI plus restores its previous configuration on failure. The
+owned-only mask operation is safe from primary interrupt context. All SYSIRQ
+writers must use the same controller management for serialization to apply.
