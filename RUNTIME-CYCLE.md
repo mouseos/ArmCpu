@@ -2,7 +2,7 @@
 
 The generic ArmCpu build defaults `ARMCPU_RUNTIME_A04BR3` to 0. The a04br3
 device build may set it only after checking the generated XNU configuration
-has `CONFIG_CPU_COUNTERS=0`. Even then, the experiment is off unless the boot
+has `CONFIG_CPU_COUNTERS=0`. The device default does not compile this experiment. Even when compiled, it is off unless the boot
 argument `armcpu-runtime-cycle=1` (or the short form `arc=1`) is supplied and the ADT root compatible
 starts with `benesse,a04br3`. No runtime worker is created otherwise.
 
@@ -40,3 +40,9 @@ conflicting external ownership are impossible.
 The host tests model CPU binding, lock refusal, failed recovery, timeout, PMU
 busy refusal, restoration and IRQ-safe logging. They cannot prove hardware
 access, scheduling deadlines, watchdog recovery or external PMU ownership.
+
+The recovery-ready bit is a one-time observation, not a fresh guarantee for
+each sample. The outer-window limit rejects late results after the fact; it
+does not impose a hard upper bound on the IRQ-disabled interval. No PMU check
+provides an exclusive lease against EL2, EL3, firmware, or debug agents.
+Do not treat a successful sample as proof of ownership or guaranteed recovery.

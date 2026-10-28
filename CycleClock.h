@@ -34,7 +34,7 @@ static inline unsigned armcpu_timer_select(const ArmCpuTimerProbe &v, const ArmC
   return v.status == 1 ? 1 : p.status == 1 ? 2 : 0;
 }
 
-// One calling CPU, before interrupts are enabled. Refuse an already owned PMU.
+// One calling CPU. Refuse locally visible PMU activity; this is not a global lease.
 // The caller supplies ordered register operations; the result is raw so the
 // timer frequency and both deltas remain independently inspectable.
 struct ArmCpuCycleSample { uint64_t frequency, ticks, cycles, pmcr, enabledBefore, filter, interrupts, overflow, overflowAfter, outerTicks, beginReadTicks, endReadTicks, beginBefore, beginAfter, endBefore, endAfter, badPrevious, badCurrent; unsigned status, badStage, timeSource; ArmCpuTimerProbe virtualBefore, virtualAfter, physicalAfter; uint64_t timerControlBefore, timerControlAfter, timerAccess; };

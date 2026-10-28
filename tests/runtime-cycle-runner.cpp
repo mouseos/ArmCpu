@@ -20,7 +20,7 @@ static void clock_get_uptime(uint64_t *t){*t=uptime;}
 static uint64_t now = 0, counter = 77, control = 8;
 static processor_t cpu_to_processor(int i){return i < 4 ? &cpus[i] : nullptr;}
 static processor_t current_processor(){return current;}
-static bool armcpu_runtime_owner_held(unsigned){return owner;}
+static bool armcpu_runtime_policy_allows(unsigned){return owner;}
 static bool armcpu_runtime_online(processor_t p, unsigned cpu){return p==&cpus[cpu] && p->state>=PROCESSOR_IDLE && p->state<=PROCESSOR_RUNNING;}
 static bool armcpu_runtime_try_hotplug_lock(){if(!hotplugAvailable)return false; assert(!hotplugLocked);hotplugLocked=true;return true;}
 static void armcpu_runtime_hotplug_unlock(){assert(hotplugLocked);hotplugLocked=false;}
