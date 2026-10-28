@@ -233,7 +233,7 @@ static volatile uint32_t gSpiUsed = 0;
 // Protect the registration table and GIC shared register RMWs against other
 // concurrent attachers; IRQ delivery never acquires this lock.
 static volatile uint32_t gSpiRegistrationLock = 0;
-// Published only by the boot CPU after its GICv2 target and interface are ready.
+// One-shot boot-CPU GICv2 initialization only; not a guarantee after quiesce.
 static uint32_t gSpiBootReady = 0;
 struct SpiRegistrationGuard {
   boolean_t irq;
