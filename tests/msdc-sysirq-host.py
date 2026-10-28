@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess,tempfile
 s=(Path(__file__).resolve().parents[1]/'ArmCpu.cpp').read_text()
 guard=s[s.index('#ifndef ARMCPU_SPI_SERIALIZE'):s.index('static uint64_t gBootAffinity')]
-start=s.index('extern "C" IOReturn armcpu_spi_attach_sysirq');end=s.index('\n#endif',start)
+start=s.index('extern "C" bool armcpu_spi_boot_ready');end=s.index('\n#endif',start)
 body=s[start:end].replace('__asm__ volatile ("dsb sy" ::: "memory");','__atomic_thread_fence (__ATOMIC_SEQ_CST);')
 pre=r'''
 #include <atomic>
@@ -34,7 +34,8 @@ void write32(uintptr_t p,unsigned o,uint32_t v){
 void handler(void*){}void other(void*){}
 '''
 post=r'''
-int main(){*reinterpret_cast<uint32_t*>(gDist+4)=7;uint32_t pol=0x100,rb=0;uint64_t target=0;bool installed=false;uint32_t bit=1u<<14;
+int main(){assert(!armcpu_spi_boot_ready());__atomic_store_n(&gSpiBootReady,1,__ATOMIC_RELEASE);assert(armcpu_spi_boot_ready());
+ *reinterpret_cast<uint32_t*>(gDist+4)=7;uint32_t pol=0x100,rb=0;uint64_t target=0;bool installed=false;uint32_t bit=1u<<14;
  rejectGroup=true;assert(armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed)==kIOReturnNotReady);
  assert(!installed && pol==0x100 && lastMask==bit && gSpiUsed==0);
  // A failed rollback mask still publishes a permanent handler and records the failure.

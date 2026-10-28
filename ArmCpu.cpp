@@ -233,6 +233,8 @@ static volatile uint32_t gSpiUsed = 0;
 // Protect the registration table and GIC shared register RMWs against other
 // concurrent attachers; IRQ delivery never acquires this lock.
 static volatile uint32_t gSpiRegistrationLock = 0;
+// Published only by the boot CPU after its GICv2 target and interface are ready.
+static uint32_t gSpiBootReady = 0;
 struct SpiRegistrationGuard {
   boolean_t irq;
   SpiRegistrationGuard () : irq (ml_set_interrupts_enabled (false)) {
@@ -474,6 +476,9 @@ void ArmCpu::enableGic (void)
       armcpu_gic_boot[7] = read32 (gCpuIf, 0xfc);
     }
     armcpu_gic_ready = 1;
+#if ARMCPU_SPI_SERIALIZE
+    if (!secondary) __atomic_store_n (&gSpiBootReady, 1, __ATOMIC_RELEASE);
+#endif
     return;
   }
   uint64_t value;
@@ -1198,6 +1203,11 @@ extern "C" IOReturn armcpu_spi_attach (uint32_t intid, bool edge, void (*handler
 }
 
 #if ARMCPU_SPI_SERIALIZE
+extern "C" bool armcpu_spi_boot_ready (void)
+{
+  return __atomic_load_n (&gSpiBootReady, __ATOMIC_ACQUIRE) != 0;
+}
+
 // MTK's low-active input is inverted by SYSIRQ before the GIC. All users of
 // this API share the SPI registration lock for SYSIRQ and distributor RMWs.
 // The caller owns the mapping for the lifetime of any installed handler.
