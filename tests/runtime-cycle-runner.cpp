@@ -80,5 +80,5 @@ int main(){
   armcpu_quiesce_calls=0; a04br3_runtime_recovery_ready=0; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==0 && !a04br3_runtime_probe_active);
-  puts("PASS: bounded worker, CPU binding, IRQ-safe logs, PMU restoration and offline refusal");
+  puts("PASS: CPU binding, IRQ-safe logs, PMU restoration and offline refusal");
 }

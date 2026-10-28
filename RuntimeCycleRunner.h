@@ -31,7 +31,9 @@ static void armcpu_runtime_hotplug_unlock() { lck_mtx_unlock(&processor_updown_l
 #endif
 
 // This optional worker uses the R5 startup sampler only in a short, pinned,
-// non-preemptible interval. Hardware-idle checks are not a system-wide PMU
+// non-preemptible interval. The timer bound rejects samples after the fact;
+// it does not enforce a hard upper bound on IRQ masking. Hardware-idle checks
+// are not a system-wide PMU
 // lease; all output explicitly says so. No logging occurs while IRQs are off.
 static void armcpu_runtime_cycle_worker(void *, wait_result_t)
 {
