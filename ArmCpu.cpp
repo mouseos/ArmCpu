@@ -617,7 +617,9 @@ bool ArmCpu::start (IOService *provider)
   drainPending ();
 #if ARMCPU_RUNTIME_A04BR3
   unsigned runtimeCycle = 0;
-  if (gGicV2 && PE_parse_boot_argn ("armcpu-runtime-cycle", &runtimeCycle, sizeof (runtimeCycle)) && runtimeCycle == 1) {
+  bool runtimeSpecified = PE_parse_boot_argn ("armcpu-runtime-cycle", &runtimeCycle, sizeof (runtimeCycle));
+  if (!runtimeSpecified) runtimeSpecified = PE_parse_boot_argn ("arc", &runtimeCycle, sizeof (runtimeCycle));
+  if (gGicV2 && runtimeSpecified && runtimeCycle == 1) {
     auto runtimeRoot = IORegistryEntry::fromPath ("/", gIODTPlane);
     OSData *runtimeCompatible = runtimeRoot ? OSDynamicCast (OSData, runtimeRoot->getProperty ("compatible")) : nullptr;
     if (runtimeCompatible && armcpu_runtime_is_a04br3 (runtimeCompatible->getBytesNoCopy (), runtimeCompatible->getLength ())) {

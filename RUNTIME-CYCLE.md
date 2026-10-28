@@ -3,7 +3,7 @@
 The generic ArmCpu build defaults `ARMCPU_RUNTIME_A04BR3` to 0. The a04br3
 device build may set it only after checking the generated XNU configuration
 has `CONFIG_CPU_COUNTERS=0`. Even then, the experiment is off unless the boot
-argument `armcpu-runtime-cycle=1` is supplied and the ADT root compatible
+argument `armcpu-runtime-cycle=1` (or the short form `arc=1`) is supplied and the ADT root compatible
 starts with `benesse,a04br3`. No runtime worker is created otherwise.
 
 The worker waits five seconds and then up to 20 seconds for the board's
