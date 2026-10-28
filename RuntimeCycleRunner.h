@@ -14,6 +14,7 @@ extern "C" processor_t thread_bind(processor_t);
 extern "C" kern_return_t processor_info(processor_t, processor_flavor_t, host_t *, processor_info_t, mach_msg_type_number_t *);
 extern "C" lck_mtx_t processor_updown_lock;
 extern "C" volatile uint32_t a04br3_runtime_recovery_ready, a04br3_runtime_probe_active;
+extern "C" bool a04br3_runtime_watchdog_armed(void);
 static bool armcpu_runtime_online(processor_t p, unsigned cpu) {
   processor_basic_info_data_t info = {};
   mach_msg_type_number_t count = PROCESSOR_BASIC_INFO_COUNT;
@@ -94,6 +95,16 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
         thread_bind(previous);
         armcpu_runtime_hotplug_unlock();
         ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=bind-deadline\n", cpu, round);
+        continue;
+      }
+      // Read the hardware enable again after binding, before masking IRQs.
+      // RTC fastboot remains a boot-time observation; no WACS2 transaction is
+      // attempted here because other board drivers use that controller.
+      if (!a04br3_runtime_watchdog_armed()) {
+        __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
+        thread_bind(previous);
+        armcpu_runtime_hotplug_unlock();
+        ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=watchdog-not-armed\n", cpu, round);
         continue;
       }
       ArmCpuCycleSample sample = {};

@@ -11,7 +11,8 @@ static CPU cpus[4] = {{6},{6},{6},{6}};
 static processor_t current = cpus, bound = nullptr;
 static bool irq = true, preempt = true, running = false;
 static unsigned samples = 0, logs = 0, terminations = 0, bindCount = 0;
-static bool owner=true, hotplugAvailable=true, hotplugLocked=false, lateBind=false;
+static bool owner=true, hotplugAvailable=true, hotplugLocked=false, lateBind=false, watchdogArmed=true;
+static bool a04br3_runtime_watchdog_armed(){return watchdogArmed;}
 static volatile uint32_t a04br3_runtime_recovery_ready=1, a04br3_runtime_probe_active=0;
 static uint64_t uptime=0;
 static volatile uint32_t armcpu_quiesce_calls=0, armcpu_halt_calls=0, armcpu_smp_step[8]={0,7,7,7};
@@ -74,7 +75,10 @@ int main(){
   hotplugAvailable=true; lateBind=true; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==24 && !hotplugLocked);
-  lateBind=false; armcpu_quiesce_calls=1; samples=logs=terminations=bindCount=0;
+  lateBind=false; watchdogArmed=false; samples=logs=terminations=bindCount=0;
+  armcpu_runtime_cycle_worker(nullptr,0);
+  assert(samples==0 && logs==12 && terminations==1 && bindCount==24 && !hotplugLocked && !a04br3_runtime_probe_active);
+  watchdogArmed=true; armcpu_quiesce_calls=1; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==0 && !hotplugLocked);
   armcpu_quiesce_calls=0; a04br3_runtime_recovery_ready=0; samples=logs=terminations=bindCount=0;
