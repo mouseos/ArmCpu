@@ -14,7 +14,7 @@ extern "C" processor_t thread_bind(processor_t);
 extern "C" kern_return_t processor_info(processor_t, processor_flavor_t, host_t *, processor_info_t, mach_msg_type_number_t *);
 extern "C" lck_mtx_t processor_updown_lock;
 extern "C" volatile uint32_t a04br3_runtime_recovery_ready, a04br3_runtime_probe_active;
-extern "C" bool a04br3_runtime_watchdog_armed(void);
+extern "C" bool a04br3_runtime_recovery_recheck(void);
 static bool armcpu_runtime_online(processor_t p, unsigned cpu) {
   processor_basic_info_data_t info = {};
   mach_msg_type_number_t count = PROCESSOR_BASIC_INFO_COUNT;
@@ -32,10 +32,8 @@ static void armcpu_runtime_hotplug_unlock() { lck_mtx_unlock(&processor_updown_l
 #endif
 
 // This optional worker uses the R5 startup sampler only in a short, pinned,
-// non-preemptible interval. The timer bound rejects samples after the fact;
-// it does not enforce a hard upper bound on IRQ masking. Hardware-idle checks
-// are not a system-wide PMU
-// lease; all output explicitly says so. No logging occurs while IRQs are off.
+// non-preemptible interval with interrupts enabled. Hardware-idle checks
+// are not a system-wide PMU lease; all output explicitly says so.
 static void armcpu_runtime_cycle_worker(void *, wait_result_t)
 {
   // Kernel thread continuations normally begin with interrupts enabled.
@@ -97,23 +95,22 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
         ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=bind-deadline\n", cpu, round);
         continue;
       }
-      // Read the hardware enable again after binding, before masking IRQs.
-      // RTC fastboot remains a boot-time observation; no WACS2 transaction is
-      // attempted here because other board drivers use that controller.
-      if (!a04br3_runtime_watchdog_armed()) {
+      // Re-read RTC and watchdog after binding, with IRQs enabled. The board
+      // returns false on contention or a failed read; this is not an EL lease.
+      if (!a04br3_runtime_recovery_recheck()) {
         __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
         thread_bind(previous);
         armcpu_runtime_hotplug_unlock();
-        ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=watchdog-not-armed\n", cpu, round);
+        ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=recovery-recheck-failed\n", cpu, round);
         continue;
       }
       ArmCpuCycleSample sample = {};
       uint64_t mpidr = 0;
       bool sameCpu = false, irqBefore = ml_get_interrupts_enabled ();
       if (irqBefore) {
-        // Other CPUs do not feed TOPRGU until the bound probe returns.
+        // Keep local interrupts enabled. The pinned sample includes interrupt
+        // activity, and has no guarantee that another PMU owner stays away.
         disable_preemption();
-        bool oldIrq = ml_set_interrupts_enabled (false);
         sameCpu = current_processor() == target;
         if (sameCpu) {
           ArmCpuCycleRegisters regs;
@@ -127,7 +124,7 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
             uint64_t limit = frequency / 1000;
             uint64_t targetTicks = limit - limit / 10;
             if (frequency >= 1000 && frequency <= 1000000000 && targetTicks)
-              sample = armcpu_cycle_sample(regs, targetTicks, limit);
+              sample = armcpu_cycle_sample(regs, targetTicks, limit, true);
             else { sample.frequency = frequency; sample.status = 2; }
           } else {
             sample.frequency = regs.frequency();
@@ -135,7 +132,6 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
           }
           sameCpu = current_processor() == target;
         }
-        ml_set_interrupts_enabled (oldIrq);
         enable_preemption();
       }
       __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
@@ -148,8 +144,14 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
           ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u mpidr=%llx status=%u cntfrq=%llu\n", cpu, round, mpidr, sample.status, sample.frequency);
           ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-count cpu=%u ticks=%llu cycles=%llu outer=%llu\n", cpu, sample.ticks, sample.cycles, sample.outerTicks);
           ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-pmu cpu=%u pmcr=%llx enabled=%llx filter=%llx interrupts=%llx overflow=%llx after=%llx\n", cpu, sample.pmcr, sample.enabledBefore, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter);
-          ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-window cpu=%u begin=%llu end=%llu busy=1 idle=unknown owner=unverified-kpc-disabled\n", cpu, sample.beginReadTicks, sample.endReadTicks);
+          ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-window cpu=%u begin=%llu end=%llu busy=1 idle=unknown irq=enabled owner=unverified-kpc-disabled\n", cpu, sample.beginReadTicks, sample.endReadTicks);
         }
+      }
+      if (sample.status == 11) {
+        // An observed PMU configuration change means ownership is unknown.
+        // Never perform another probe in this boot after such a conflict.
+        thread_terminate(current_thread());
+        return;
       }
     }
     if (round != 2 && ml_get_interrupts_enabled ()) IOSleep (1000);

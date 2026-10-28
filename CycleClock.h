@@ -91,7 +91,7 @@ struct ArmCpuCycleReportState {
   bool expired(uint64_t now, uint64_t deadline) const { return now >= deadline || waits >= 150; }
   void waited() { ++waits; }
 };
-template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r, uint64_t targetTicks = 0, uint64_t maxOuterTicks = 0)
+template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r, uint64_t targetTicks = 0, uint64_t maxOuterTicks = 0, bool detectInterference = false)
 {
   ArmCpuCycleSample s = {};
   const uint64_t version = (r.id() >> 8) & 15;
@@ -136,6 +136,14 @@ template <typename R> static ArmCpuCycleSample armcpu_cycle_sample(R &r, uint64_
   }
   const uint64_t cyclesEnd = r.cycle();
   const uint64_t endAfter = r.time();
+  // If observed configuration changed, another actor may have acquired the
+  // PMU. Do not overwrite its state or claim a valid sample. This check cannot
+  // detect an owner that changes and restores state between observations.
+  if (detectInterference && (((r.pmcr() ^ ((original & ~(8ULL | 64ULL)) | 1)) & 0x7fULL) ||
+      r.enabled() != (1ULL << 31) || r.filter() != s.filter || r.interrupts() != s.interrupts ||
+      ((r.overflow() ^ s.overflow) & ~(1ULL << 31)))) {
+    s.status = 11; s.cycles = 0; return s;
+  }
   r.disable_cycle();
   r.barrier();
   s.overflowAfter = r.overflow();

@@ -11,8 +11,8 @@ static CPU cpus[4] = {{6},{6},{6},{6}};
 static processor_t current = cpus, bound = nullptr;
 static bool irq = true, preempt = true, running = false;
 static unsigned samples = 0, logs = 0, terminations = 0, bindCount = 0;
-static bool owner=true, hotplugAvailable=true, hotplugLocked=false, lateBind=false, watchdogArmed=true;
-static bool a04br3_runtime_watchdog_armed(){return watchdogArmed;}
+static bool owner=true, hotplugAvailable=true, hotplugLocked=false, lateBind=false, watchdogArmed=true, interference=false;
+static bool a04br3_runtime_recovery_recheck(){return watchdogArmed;}
 static volatile uint32_t a04br3_runtime_recovery_ready=1, a04br3_runtime_probe_active=0;
 static uint64_t uptime=0;
 static volatile uint32_t armcpu_quiesce_calls=0, armcpu_halt_calls=0, armcpu_smp_step[8]={0,7,7,7};
@@ -38,19 +38,19 @@ static int current_thread(){return 1;}
 static void thread_terminate(int){++terminations;}
 struct ArmCpuCycleRegisters {
   unsigned source=0;
-  uint64_t mpidr(){assert(!irq&&!preempt);return static_cast<uint64_t>(current-cpus);}
-  uint64_t counter(unsigned){assert(!irq&&!preempt);now+=100; if(running) counterValueIncrement(); return now;}
+  uint64_t mpidr(){assert(irq&&!preempt);return static_cast<uint64_t>(current-cpus);}
+  uint64_t counter(unsigned){assert(irq&&!preempt);now+=100; if(running) counterValueIncrement(); return now;}
   void counterValueIncrement(){::counter+=10000;}
   uint64_t id(){return 1ULL<<8;} uint64_t frequency(){return 26000000;}
-  uint64_t pmcr(){return control;} uint64_t enabled(){return 0;} uint64_t filter(){return 0;}
+  uint64_t pmcr(){return control;} uint64_t enabled(){return running ? ((1ULL << 31) | (interference ? 1ULL : 0ULL)) : 0;} uint64_t filter(){return 0;}
   uint64_t interrupts(){return 0;} uint64_t overflow(){return 0;}
   uint64_t cycle(){return ::counter;}
   uint64_t time(){return this->counter(source);}
   void clear_overflow(uint64_t){assert(false);}
-  void set_cycle(uint64_t x){assert(!irq&&!preempt);::counter=x;}
-  void set_pmcr(uint64_t x){assert(!irq&&!preempt);control=x;}
-  void enable_cycle(){assert(!irq&&!preempt && a04br3_runtime_probe_active);running=true;}
-  void disable_cycle(){assert(!irq&&!preempt);running=false;++samples;}
+  void set_cycle(uint64_t x){assert(irq&&!preempt);::counter=x;}
+  void set_pmcr(uint64_t x){assert(irq&&!preempt);control=x;}
+  void enable_cycle(){assert(irq&&!preempt && a04br3_runtime_probe_active);running=true;}
+  void disable_cycle(){assert(irq&&!preempt);running=false;++samples;}
   void barrier(){}
 };
 #include "../RuntimeCycleRunner.h"
@@ -78,7 +78,12 @@ int main(){
   lateBind=false; watchdogArmed=false; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==24 && !hotplugLocked && !a04br3_runtime_probe_active);
-  watchdogArmed=true; armcpu_quiesce_calls=1; samples=logs=terminations=bindCount=0;
+  watchdogArmed=true; control=8; counter=77; interference=true; samples=logs=terminations=bindCount=0;
+  armcpu_runtime_cycle_worker(nullptr,0);
+  assert(samples==0 && terminations==1 && bindCount==2 && !hotplugLocked && !a04br3_runtime_probe_active);
+  assert(running && control==1); // observed conflict: do not overwrite the other owner's state
+  running=false; control=8; counter=77; interference=false;
+  armcpu_quiesce_calls=1; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==0 && !hotplugLocked);
   armcpu_quiesce_calls=0; a04br3_runtime_recovery_ready=0; samples=logs=terminations=bindCount=0;

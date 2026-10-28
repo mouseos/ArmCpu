@@ -18,7 +18,7 @@ Each attempt nonblockingly acquires XNU's `processor_updown_lock`, which XNU
 processor startup and shutdown also use. It rejects an observed quiesce/halt,
 an incomplete secondary startup, an offline processor, or a busy lock. It binds
 the current thread and yields; after resuming it rejects a delay of 250 ms or
-more, checks the actual processor, masks local interrupts and disables
+more, checks the actual processor, keeps local interrupts enabled and disables
 preemption. It probes CNTVCT, checks PMU registers are unused, saves state,
 measures PMCCNTR for a busy-loop target of 0.9 ms, and restores state. Outer
 windows over 1 ms are rejected. The lock, binding, interrupts and preemption are
@@ -29,8 +29,10 @@ not proof of a hard scheduler deadline.
 Every sample reports the raw CNTFRQ, ticks, cycles, outer and endpoint widths,
 PMCR, PMC enable, filter, interrupts and overflow flags. `busy=1` and
 `idle=unknown` mean this is an intrusive active-load sample, not a workload or
-idle average. `owner=assumed-kpc-disabled` is deliberately an assumption, not
-a global lease. The generated CONFIG_CPU_COUNTERS=0 disables the normal XNU
+idle average. `owner=unverified-kpc-disabled` explicitly records that no global lease
+was obtained. A detected PMU configuration change yields status 11, stops
+further sampling and leaves the observed state untouched rather than restoring
+a stale snapshot over another actor. Undetected changes remain possible. The generated CONFIG_CPU_COUNTERS=0 disables the normal XNU
 KPC/monotonic integration; R5 showed secondary CPUs 1–3 completing the startup
 PMU probe. Neither fact proves that EL2, EL3, firmware or debug agents never
 access the PMU. CPU0 PMU access has not been directly validated. The explicit
@@ -41,9 +43,10 @@ The host tests model CPU binding, lock refusal, failed recovery, timeout, PMU
 busy refusal, restoration and IRQ-safe logging. They cannot prove hardware
 access, scheduling deadlines, watchdog recovery or external PMU ownership.
 
-The worker rechecks the watchdog enable after binding. The RTC fastboot bit is
-a one-time observation, not a fresh guarantee for each sample; re-reading it
-without coordinating all WACS2 users could race other board drivers. The outer-window limit rejects late results after the fact; it
-does not impose a hard upper bound on the IRQ-disabled interval. No PMU check
-provides an exclusive lease against EL2, EL3, firmware, or debug agents.
+The worker rechecks the RTC fastboot bit and watchdog enable after binding;
+known board WACS2 users share a nonblocking lock. These are observations, not
+leases over firmware or hardware. Local IRQs remain enabled during the sample,
+which includes interrupt work; the outer-window limit rejects late results
+after the fact. No PMU check provides an exclusive lease against EL2, EL3,
+firmware, or debug agents.
 Do not treat a successful sample as proof of ownership or guaranteed recovery.
