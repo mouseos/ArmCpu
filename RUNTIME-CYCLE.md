@@ -31,8 +31,10 @@ PMCR, PMC enable, filter, interrupts and overflow flags. `busy=1` and
 `idle=unknown` mean this is an intrusive active-load sample, not a workload or
 idle average. `owner=unverified-kpc-disabled` explicitly records that no global lease
 was obtained. A detected PMU configuration change yields status 11, stops
-further sampling and leaves the observed state untouched rather than restoring
-a stale snapshot over another actor. Undetected changes remain possible. The generated CONFIG_CPU_COUNTERS=0 disables the normal XNU
+further sampling, leaves the observed state untouched rather than restoring
+a stale snapshot over another actor, and keeps the board watchdog unfed.
+Watchdog recovery is an intended fallback, not a guarantee. Undetected changes
+remain possible. The generated CONFIG_CPU_COUNTERS=0 disables the normal XNU
 KPC/monotonic integration; R5 showed secondary CPUs 1–3 completing the startup
 PMU probe. Neither fact proves that EL2, EL3, firmware or debug agents never
 access the PMU. CPU0 PMU access has not been directly validated. The explicit

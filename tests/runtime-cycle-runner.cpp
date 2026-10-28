@@ -80,9 +80,9 @@ int main(){
   assert(samples==0 && logs==12 && terminations==1 && bindCount==24 && !hotplugLocked && !a04br3_runtime_probe_active);
   watchdogArmed=true; control=8; counter=77; interference=true; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
-  assert(samples==0 && terminations==1 && bindCount==2 && !hotplugLocked && !a04br3_runtime_probe_active);
+  assert(samples==0 && terminations==1 && bindCount==2 && !hotplugLocked && a04br3_runtime_probe_active);
   assert(running && control==1); // observed conflict: do not overwrite the other owner's state
-  running=false; control=8; counter=77; interference=false;
+  running=false; control=8; counter=77; interference=false; a04br3_runtime_probe_active=0;
   armcpu_quiesce_calls=1; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==0 && !hotplugLocked);

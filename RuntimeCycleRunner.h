@@ -134,7 +134,11 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
         }
         enable_preemption();
       }
-      __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
+      // On detected interference do not resume feeding the watchdog: the
+      // PMU may still be enabled and belongs to an unknown actor. Preserve its
+      // state and let the recovery watchdog attempt to return to fastboot.
+      if (sample.status != 11)
+        __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
       thread_bind(previous);
       armcpu_runtime_hotplug_unlock();
       if (ml_get_interrupts_enabled ()) {
