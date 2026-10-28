@@ -1206,8 +1206,12 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
                                               uint32_t *readback, uint64_t *router, bool *installed)
 {
   if (installed) *installed = false;
-  if (!installed || !polarity || !handler || !gGicV2 || !gDist || !armcpu_gic_ready || !gBootAffinity)
+  if (!installed || !polarity || !handler || !gGicV2 || !gDist || !armcpu_gic_ready || !gBootAffinity) {
+    if (readback) *readback = 0x100u | (installed ? 1u : 0u) | (polarity ? 2u : 0u) |
+      (handler ? 4u : 0u) | (gGicV2 ? 8u : 0u) | (gDist ? 16u : 0u) |
+      (armcpu_gic_ready ? 32u : 0u) | (gBootAffinity ? 64u : 0u);
     return kIOReturnNotReady;
+  }
   SpiRegistrationGuard guard;
   uint32_t intid = spi + 32;
   unsigned count = ((read32 (gDist, 4) & 31) + 1) * 32;
@@ -1242,6 +1246,11 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
     valid = (read32 (gDist, 0x100 + word) & bit) != 0;
   }
   if (!valid) {
+    if (readback) *readback = 0x200u | ((*polarity & polBit) ? 1u : 0u) |
+      ((group & bit) ? 2u : 0u) | (!(currentCfg & (1u << shift)) ? 4u : 0u) |
+      (priority == 0xa0 ? 8u : 0u) | (target == static_cast<uint8_t> (gBootAffinity) ? 16u : 0u) |
+      (*installed ? 32u : 0u);
+    if (router) *router = target;
     // W1C masks only this SPI. Do it before restoring the polarity.
     write32 (gDist, 0x180 + word, bit);
     __asm__ volatile ("dsb sy" ::: "memory");
