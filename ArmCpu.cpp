@@ -229,6 +229,10 @@ static volatile uint32_t gSpiUsed = 0;
 #ifndef ARMCPU_SPI_SERIALIZE
 #define ARMCPU_SPI_SERIALIZE 0
 #endif
+// Board opt-in: this GICv2 distributor is accessed from Non-secure state.
+#ifndef ARMCPU_GICV2_ASSUME_NONSECURE
+#define ARMCPU_GICV2_ASSUME_NONSECURE 0
+#endif
 #if ARMCPU_SPI_SERIALIZE
 // Protect the registration table and GIC shared register RMWs against other
 // concurrent attachers; IRQ delivery never acquires this lock.
@@ -1238,7 +1242,14 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
   uint8_t oldTarget = *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid);
   *polarity = oldPol | polBit;
   __asm__ volatile ("dsb sy" ::: "memory");
-  write32 (gDist, 0x80 + word, oldGroup | bit);
+  const bool nsSecurity = ARMCPU_GICV2_ASSUME_NONSECURE && (read32 (gDist, 4) & (1u << 10));
+  // GICv2 IHI0048B sections 3.5 and 4.3.4:
+  // https://documentation-service.arm.com/static/5f8ff21df86e16515cdbfafe
+  // With Security Extensions a Non-secure IGROUPR access is RAZ/WI; the
+  // Group 0 priority field is also RAZ/WI. A nonzero priority readback then
+  // establishes Group 1 only if the board's Non-secure assumption is true.
+  // This does not establish that an interrupt can be delivered.
+  if (!nsSecurity) write32 (gDist, 0x80 + word, oldGroup | bit);
   *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid) = 0xa0;
   write32 (gDist, cfg, oldCfg & ~(1u << shift));
   *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid) = static_cast<uint8_t> (gBootAffinity);
@@ -1246,7 +1257,7 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
   uint32_t group = read32 (gDist, 0x80 + word), currentCfg = read32 (gDist, cfg);
   uint8_t priority = *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid);
   uint8_t target = *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid);
-  bool valid = (*polarity & polBit) && (group & bit) && !(currentCfg & (1u << shift)) &&
+  bool valid = (*polarity & polBit) && (nsSecurity || (group & bit)) && !(currentCfg & (1u << shift)) &&
                priority == 0xa0 && target == static_cast<uint8_t> (gBootAffinity);
   if (valid) {
     gSpi[used] = {intid, handler, context, 0};
@@ -1276,7 +1287,7 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
       }
     }
     *polarity = (*polarity & ~polBit) | (oldPol & polBit);
-    write32 (gDist, 0x80 + word, (read32 (gDist, 0x80 + word) & ~bit) | (oldGroup & bit));
+    if (!nsSecurity) write32 (gDist, 0x80 + word, (read32 (gDist, 0x80 + word) & ~bit) | (oldGroup & bit));
     write32 (gDist, cfg, (read32 (gDist, cfg) & ~(1u << shift)) | (oldCfg & (1u << shift)));
     *reinterpret_cast<volatile uint8_t *> (gDist + 0x400 + intid) = oldPriority;
     *reinterpret_cast<volatile uint8_t *> (gDist + 0x800 + intid) = oldTarget;

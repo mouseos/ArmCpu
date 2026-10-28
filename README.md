@@ -100,6 +100,20 @@ and masks that SPI plus restores its previous configuration on failure. The
 owned-only mask operation is safe from primary interrupt context. All SYSIRQ
 writers must use the same controller management for serialization to apply.
 
+`ARMCPU_GICV2_ASSUME_NONSECURE=1` is a board-specific build opt-in, off by
+default. Enable it only when the distributor MMIO accesses are known to be
+Non-secure. If GICD_TYPER.SecurityExtn is set, the checked SYSIRQ attach then
+does not test or write IGROUPR, which is RAZ/WI to Non-secure accesses. It
+still requires priority 0xa0, target, trigger, polarity and enable readback.
+Group 0 priority fields are RAZ/WI to Non-secure accesses, so the nonzero
+priority readback is evidence for Group 1 only under the stated access
+assumption. The flag cannot detect a mistaken Secure mapping. When Security
+Extensions are absent the existing IGROUPR check remains in force. Neither
+readback nor registration demonstrates interrupt delivery; test actual
+delivery and the device driver's timeout, quarantine and fallback paths.
+See Arm IHI0048B sections 3.5 and 4.3.4:
+https://documentation-service.arm.com/static/5f8ff21df86e16515cdbfafe
+
 The checked registration rollback and the owned mask operation read the
 ISENABLER bit after ICENABLER. An unconfirmed mask is recorded in
 `armcpu_spi_mask_failures` and `armcpu_spi_mask_failed_id` and is not reported
