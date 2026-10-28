@@ -20,7 +20,7 @@ int main() {
   reset(); *reinterpret_cast<uint32_t*>(gDist+4)=7 | (1u<<10);
   auto rc=armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed);
 #if ARMCPU_GICV2_ASSUME_NONSECURE
-  assert(rc==0 && installed && target==2 && (read32(gDist,0x10c)&bit));
+  assert(rc==0 && installed && target==2 && rb==0x1a003 && (read32(gDist,0x10c)&bit));
   reset(); *reinterpret_cast<uint32_t*>(gDist+4)=7 | (1u<<10); rejectPriority=true;
   assert(armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed)==kIOReturnNotReady);
   assert(!installed && lastMask==bit && pol==0);
@@ -36,6 +36,9 @@ int main() {
 #else
   assert(rc==kIOReturnNotReady && !installed && lastMask==bit);
 #endif
+  reset(); *reinterpret_cast<uint32_t*>(gDist+4)=7; rejectGroup=false;
+  assert(armcpu_spi_attach_sysirq(78,&pol,handler,nullptr,&rb,&target,&installed)==0);
+  assert(installed && rb==0xa003);
   puts("PASS GICv2 opt-in group validation and failure rollback");
 }
 '''

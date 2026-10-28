@@ -111,6 +111,9 @@ assumption. The flag cannot detect a mistaken Secure mapping. When Security
 Extensions are absent the existing IGROUPR check remains in force. Neither
 readback nor registration demonstrates interrupt delivery; test actual
 delivery and the device driver's timeout, quarantine and fallback paths.
+In a successful checked attach, readback bit 16 marks Group 1 as inferred from
+the Non-secure assumption and priority, rather than observed via IGROUPR; the
+legacy lower bits remain unchanged. This marker applies only to success.
 See Arm IHI0048B sections 3.5 and 4.3.4:
 https://documentation-service.arm.com/static/5f8ff21df86e16515cdbfafe
 

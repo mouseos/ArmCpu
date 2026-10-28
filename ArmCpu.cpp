@@ -1294,7 +1294,9 @@ extern "C" IOReturn armcpu_spi_attach_sysirq (uint32_t spi, volatile uint32_t *p
     __asm__ volatile ("dsb sy" ::: "memory");
     return kIOReturnNotReady;
   }
-  if (readback) *readback = 3u | (uint32_t (priority) << 8);
+  // Keep the legacy success bits; bit 16 distinguishes an inferred Group 1
+  // from an IGROUPR observation when the Non-secure opt-in is in use.
+  if (readback) *readback = 3u | (uint32_t (priority) << 8) | (nsSecurity ? (1u << 16) : 0u);
   if (router) *router = target;
   return kIOReturnSuccess;
 }
