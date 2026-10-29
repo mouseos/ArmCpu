@@ -9,6 +9,7 @@
 #include <kern/clock.h>
 #include <pexpert/pexpert.h>
 #include "CycleClock.h"
+#include "StartupCycleGuard.h"
 #include "RuntimeCyclePolicy.h"
 #ifndef ARMCPU_RUNTIME_A04BR3
 #define ARMCPU_RUNTIME_A04BR3 0
@@ -884,10 +885,18 @@ void ArmCpu::initCPU (bool boot)
       unsigned selected = armcpu_timer_select(virtualAfter, physicalAfter);
       if (selected) {
         registers.source = selected - 1;
-        // A visible concurrent PMU change invalidates the observation and
-        // must not be overwritten with the stale saved register state.
-        sample = armcpu_cycle_sample(registers, 0, 0, true);
+#if ARMCPU_RUNTIME_A04BR3
+        struct StartupBoard {
+          bool begin() { return a04br3_runtime_probe_begin(); }
+          bool recoveryReady() { return a04br3_runtime_recovery_recheck(); }
+          void end() { a04br3_runtime_probe_end(); }
+        } board;
+        sample = armcpu_startup_guarded_sample(board, registers);
         sample.timeSource = registers.source + 1;
+#else
+        // No board watchdog coordination: never start the PMU experiment.
+        sample.status = 12;
+#endif
       } else {
         sample.frequency = registers.frequency();
         sample.status = 10; // neither source passed the bounded liveness check

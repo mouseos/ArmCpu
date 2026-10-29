@@ -6,5 +6,5 @@ pre='''#include <cassert>\n#include <map>\n#include <string>\nstd::map<std::stri
 post='''}\nint main(){assert(!enabled());args["cc"]=1;assert(enabled());args["armcpu-cycle-clock"]=0;assert(!enabled());args["armcpu-cycle-clock"]=1;args["cc"]=0;assert(enabled());args["armcpu-cycle-clock"]=2;assert(!enabled());}\n'''
 with tempfile.TemporaryDirectory() as d:
  p=Path(d)/'x.cpp';x=Path(d)/'x';p.write_text(pre+body+post);subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror','-fsanitize=undefined',str(p),'-o',str(x)],check=True);subprocess.run([str(x)],check=True)
-assert 'armcpu_cycle_sample(registers, 0, 0, true)' in s
+assert 'armcpu_startup_guarded_sample(board, registers)' in s
 print('PASS secondary startup default off, cc alias, long-form precedence and interference check')

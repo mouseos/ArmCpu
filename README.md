@@ -46,6 +46,15 @@ registers can only be programmed by the core that owns them.
 With GICv2 and `sheng-smp=1`, `armcpu-cycle-clock=1` (or `cc=1` when the
 long option is absent) samples the PMU cycle
 counter on each secondary during `initCPU`, before enabling interrupts. The
+board recovery integration must also be compiled and its RTC/watchdog
+recheck must pass; otherwise the sample is refused. The board's ordinary
+watchdog feeder is stopped before any PMU access. If visible PMU interference
+is detected, the saved PMU state is not restored, the gate remains held, and
+the watchdog is expected to attempt recovery. This is not a guarantee against
+other watchdog feeders or an upper-EL trap. Status 11 means interference,
+12 means the board gate was unavailable or not compiled, and 13 means the
+recovery recheck failed. No sample is valid in these cases.
+The
 completed sample and that core's MPIDR are published to an independent,
 interrupts-enabled reporter thread. It reports `cycle-clock-start` with the
 `processor_start` result and the startup thread's interrupt state before and
