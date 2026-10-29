@@ -11,7 +11,8 @@ template<typename Board, typename Registers>
 static ArmCpuCycleSample armcpu_startup_guarded_sample(Board &board, Registers &registers)
 {
   ArmCpuCycleSample sample = {};
-  // Secondary CPUs can arrive together. Retry only for a bounded period;
+  // Secondary CPUs can arrive together. Retry with a nominal timer budget;
+  // stalled accesses and later recovery/measurement have no time guarantee;
   // a retained gate after interference must never be cleared by this CPU.
   if (!board.begin()) {
     const uint64_t frequency = registers.frequency();
@@ -23,7 +24,15 @@ static ArmCpuCycleSample armcpu_startup_guarded_sample(Board &board, Registers &
       const uint64_t now = registers.time();
       if (now - previous > UINT64_MAX / 2 || now - start >= limit) break;
       previous = now;
-      if (board.begin()) { acquired = true; break; }
+      if (board.begin()) {
+        const uint64_t after = registers.time();
+        if (after - now > UINT64_MAX / 2 || after - start >= limit) {
+          board.end();
+          break;
+        }
+        acquired = true;
+        break;
+      }
     }
     if (!acquired) { sample.status = 12; return sample; }
   }

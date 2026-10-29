@@ -1,8 +1,8 @@
 #include "../StartupCycleGuard.h"
 #include <cassert>
 struct Board {
- bool available=true,recovery=true,active=false; unsigned beginCalls=0,endCalls=0,busyCalls=0;
- bool begin(){++beginCalls;if(!available||active||beginCalls<=busyCalls)return false;active=true;return true;}
+ bool available=true,recovery=true,active=false; unsigned beginCalls=0,endCalls=0,busyCalls=0; uint64_t *advanceClock=nullptr, advanceBy=0;
+ bool begin(){++beginCalls;if(!available||active||beginCalls<=busyCalls)return false;active=true;if(advanceClock)*advanceClock+=advanceBy;return true;}
  bool recoveryReady(){return recovery;}
  void end(){assert(active);++endCalls;active=false;}
 };
@@ -23,6 +23,8 @@ int main(){
  assert(s.status==0&&delayed.beginCalls==21&&!delayed.active&&delayed.endCalls==1);
  Board busy;busy.available=false;Registers a;s=armcpu_startup_guarded_sample(busy,a);
  assert(s.status==12&&!a.writes&&!busy.active&&!busy.endCalls);
+ Board late;late.busyCalls=1;Registers lateRegs;late.advanceClock=&lateRegs.clock;late.advanceBy=130000;
+ s=armcpu_startup_guarded_sample(late,lateRegs);assert(s.status==12&&!late.active&&late.endCalls==1&&!lateRegs.writes);
  Board stalled;stalled.available=false;Registers t;t.stuck=true;s=armcpu_startup_guarded_sample(stalled,t);
  assert(s.status==12&&!t.writes&&stalled.beginCalls==1000001);
  Board reverse;reverse.available=false;Registers z;z.backwards=true;s=armcpu_startup_guarded_sample(reverse,z);
