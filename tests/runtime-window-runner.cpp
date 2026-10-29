@@ -44,7 +44,7 @@ static bool leaseActive=false; static unsigned repeatWaits=0, windowWaits=0;
 static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==5000 && checkRepeatSleep){assert(!running&&!leaseActive&&!bound&&!a04br3_runtime_probe_active&&!hotplugLocked && control==8 && counter==77);++repeatWaits;now+=26000ULL*ms;}if((ms==2 || ms==10) && running){if(checkRepeatSleep){assert(ms==10);++windowWaits;}now+=longSleep?1400000:26000*ms;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
 static unsigned timeLogs=0, finishedRounds=0; static bool quarantineLogged=false, completeLogged=false; static unsigned long long lastTimeEnd=0;
 static unsigned loggedStatus=999, loggedCpu=999;static unsigned long long loggedMpidr=0;static char loggedLine[1024];
-static void IOLog(const char *format, ...){assert(irq && preempt);++logs;va_list ap;va_start(ap,format);vsnprintf(loggedLine,sizeof(loggedLine),format,ap);va_end(ap);unsigned r,c;unsigned long long begin,end,freq; if(sscanf(loggedLine,"ArmCpu: runtime-time round=%u cpu=%u begin=%llu end=%llu timer_hz=%llu",&r,&c,&begin,&end,&freq)==5){assert(r==timeLogs/4 && c==timeLogs%4 && end>begin && freq==26000000 && (!timeLogs || begin>lastTimeEnd));lastTimeEnd=end;++timeLogs;} sscanf(loggedLine,"ArmCpu: runtime-finished rounds=%u",&finishedRounds);if(strstr(loggedLine,"runtime-finished") && strstr(loggedLine,"reason=quarantine"))quarantineLogged=true;if(strstr(loggedLine,"runtime-finished") && strstr(loggedLine,"reason=complete"))completeLogged=true;unsigned cpu,status;unsigned long long mpidr;if(sscanf(loggedLine,"ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u",&cpu,&mpidr,&status)==3){loggedCpu=cpu;loggedMpidr=mpidr;loggedStatus=status;}}
+static void IOLog(const char *format, ...){assert(irq && preempt);++logs;va_list ap;va_start(ap,format);vsnprintf(loggedLine,sizeof(loggedLine),format,ap);va_end(ap);if(strstr(loggedLine,"cpu-near-clock") && strstr(loggedLine,"safe=1"))assert(!running && !leaseActive && !a04br3_runtime_probe_active && !hotplugLocked && !bound);unsigned r,c;unsigned long long begin,end,freq; if(sscanf(loggedLine,"ArmCpu: runtime-time round=%u cpu=%u begin=%llu end=%llu timer_hz=%llu",&r,&c,&begin,&end,&freq)==5){assert(r==timeLogs/4 && c==timeLogs%4 && end>begin && freq==26000000 && (!timeLogs || begin>lastTimeEnd));lastTimeEnd=end;++timeLogs;} sscanf(loggedLine,"ArmCpu: runtime-finished rounds=%u",&finishedRounds);if(strstr(loggedLine,"runtime-finished") && strstr(loggedLine,"reason=quarantine"))quarantineLogged=true;if(strstr(loggedLine,"runtime-finished") && strstr(loggedLine,"reason=complete"))completeLogged=true;unsigned cpu,status;unsigned long long mpidr;if(sscanf(loggedLine,"ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u",&cpu,&mpidr,&status)==3){loggedCpu=cpu;loggedMpidr=mpidr;loggedStatus=status;}}
 static int current_thread(){return 1;}
 static void thread_terminate(int){++terminations;}
 struct ArmCpuCycleRegisters {
@@ -74,6 +74,11 @@ static bool a04br3_runtime_probe_end_checked(){if(gateReleaseFailure||leaseActiv
 static unsigned contexts=0;
 static void mock_context_sample(unsigned round,unsigned cpu,unsigned phase){assert(!running && !leaseActive && !a04br3_runtime_probe_active && !hotplugLocked && !bound);assert(round==contexts/8 && cpu==(contexts/2)%4 && phase==contexts%2);++contexts;}
 static void (*a04br3_cpu_context_sample)(unsigned,unsigned,unsigned)=mock_context_sample;
+#if ARMCPU_RUNTIME_ACTIVE
+static unsigned nearCalls=0; static bool nearFail=false;
+static bool mock_near_clock(uint64_t *out){assert(!preempt && irq && running && leaseActive && bound==current && hotplugLocked && a04br3_runtime_probe_active);++nearCalls;if(nearFail)return false;out[0]=now;out[1]=now+1;return true;}
+static bool (*a04br3_cpu_clock_near)(uint64_t *)=mock_near_clock;
+#endif
 static bool unixnu_idle_epoch_observe(int *actual,uint64_t *epoch,unsigned *reason,uint64_t *old,uint64_t *seen,unsigned *entry){*actual=(int)(current-cpus);*epoch=testEpoch;*reason=0;*old=0;*seen=0;*entry=0;return true;}
 static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return current==&cpus[cpu]?testEpoch:UINT64_MAX;}
 #if ARMCPU_RUNTIME_ACTIVE
@@ -101,7 +106,18 @@ int main(){
  unsigned previousBinds=bindCount;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==previousBinds&&armcpu_window_poison&&a04br3_runtime_probe_active);
  interference=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;running=false;control=8;counter=77;
  samples=logs=terminations=bindCount=0;checkRepeatSleep=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!hotplugLocked&&terminations==1&&repeatWaits==ARMCPU_RUNTIME_REPEAT_ROUNDS&&windowWaits==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&timeLogs==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&completeLogged&&finishedRounds==ARMCPU_RUNTIME_REPEAT_ROUNDS);
- samples=logs=terminations=bindCount=0;timeLogs=0;lastTimeEnd=0;contexts=0;repeatWaits=windowWaits=0;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(contexts==8*ARMCPU_RUNTIME_REPEAT_ROUNDS && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS);
+ samples=logs=terminations=bindCount=0;timeLogs=0;lastTimeEnd=0;contexts=0;repeatWaits=windowWaits=0;
+#if ARMCPU_RUNTIME_ACTIVE
+ nearCalls=0;
+#endif
+ armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(contexts==8*ARMCPU_RUNTIME_REPEAT_ROUNDS && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS);
+#if ARMCPU_RUNTIME_ACTIVE
+ assert(nearCalls==8*ARMCPU_RUNTIME_REPEAT_ROUNDS);
+ samples=logs=terminations=bindCount=contexts=0;timeLogs=0;lastTimeEnd=0;nearCalls=0;nearFail=true;
+ armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(nearCalls==8*ARMCPU_RUNTIME_REPEAT_ROUNDS && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS && loggedStatus==0);nearFail=false;
+ samples=logs=terminations=bindCount=contexts=0;timeLogs=0;lastTimeEnd=0;nearCalls=0;a04br3_cpu_clock_near=nullptr;
+ armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!nearCalls && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS && loggedStatus==0);a04br3_cpu_clock_near=mock_near_clock;
+#endif
  samples=logs=terminations=bindCount=contexts=0;leaseQualified=false;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!contexts && !samples && !armcpu_window_poison);leaseQualified=true;
  samples=logs=terminations=bindCount=contexts=0;watchdogArmed=false;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!contexts && !samples && !armcpu_window_poison);watchdogArmed=true;
  samples=logs=terminations=bindCount=contexts=0;leaseReleaseFailure=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(contexts==1 && samples==1 && armcpu_window_poison && leaseActive && a04br3_runtime_probe_active);leaseReleaseFailure=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;

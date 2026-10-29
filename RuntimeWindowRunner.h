@@ -17,6 +17,9 @@ extern "C" bool a04br3_pmu_lease_valid(unsigned, uint64_t);
 extern "C" bool a04br3_pmu_lease_release(unsigned, uint64_t);
 extern "C" bool a04br3_runtime_probe_end_checked(void);
 extern "C" void a04br3_cpu_context_sample(unsigned, unsigned, unsigned) __attribute__((weak_import));
+#if ARMCPU_RUNTIME_ACTIVE
+extern "C" bool a04br3_cpu_clock_near(uint64_t *) __attribute__((weak_import));
+#endif
 #endif
 
 // One experiment per boot at a time. If a probe is interrupted or reports
@@ -113,7 +116,10 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (w.status==13) idleObserved=unixnu_idle_epoch_observe(&idleActual,&idleRaw,&idleReason,&idleOld,&idleSeen,&idleEntry);
 #if ARMCPU_RUNTIME_ACTIVE
     bool activeStarted=false; uint64_t activeCycles=0,activeMin=0,activeMax=0,epochEnd=UINT64_MAX; unsigned activeIntervals=0;
+    uint64_t nearClock[2][7]={}; bool nearOk[2]={};
     if (w.started && !w.status) {bool irq=ml_set_interrupts_enabled(false);activeStarted=unixnu_pmuv3_active_start(cpu,generation);ml_set_interrupts_enabled(irq);}
+    if (context && activeStarted && ml_get_interrupts_enabled() && a04br3_cpu_clock_near)
+      nearOk[0]=a04br3_cpu_clock_near(nearClock[0]);
 #endif
     enable_preemption();
     bool recoveryStayed=true;
@@ -126,6 +132,8 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
 #if ARMCPU_RUNTIME_ACTIVE
       bool activeOk=false;
       if (activeStarted && ml_get_interrupts_enabled() && current_processor()==target) {
+        if (context && recoveryStayed && a04br3_cpu_clock_near)
+          nearOk[1]=a04br3_cpu_clock_near(nearClock[1]);
         bool irq=ml_set_interrupts_enabled(false);
         epochEnd=unixnu_idle_epoch_current(cpu);
         activeOk=unixnu_pmuv3_active_stop(cpu,generation,&activeCycles,&activeMin,&activeMax,&activeIntervals);
@@ -166,6 +174,10 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (safe) {gateReleased=armcpu_window_end_gate();safe=gateReleased;}
     if (safe) __atomic_store_n(&armcpu_window_poison,0U,__ATOMIC_RELEASE);
     thread_bind(previous);armcpu_runtime_hotplug_unlock();
+#if ARMCPU_RUNTIME_ACTIVE
+    if (context && ml_get_interrupts_enabled()) for (unsigned phase=0;phase<2;++phase)
+      IOLog("a04br3 cpu-near-clock round=%u cpu=%u phase=%u ok=%u safe=%u begin=%llu end=%llu infra=%08llx dcm=%08llx con0=%08llx con1=%08llx pwr=%08llx\n",round,cpu,phase,static_cast<unsigned>(nearOk[phase]),static_cast<unsigned>(safe),nearClock[phase][0],nearClock[phase][1],nearClock[phase][2],nearClock[phase][3],nearClock[phase][4],nearClock[phase][5],nearClock[phase][6]);
+#endif
     if (context && safe && a04br3_cpu_context_sample) a04br3_cpu_context_sample(round,cpu,1);
     if (!safe) { if (!result.status) result.status=15; result.cycles=0; result.bounds=ArmCpuCycleBounds{}; }
     if (ml_get_interrupts_enabled()) {
