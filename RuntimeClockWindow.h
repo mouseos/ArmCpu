@@ -34,14 +34,16 @@ static void armcpu_runtime_window_begin(R &r, Lease &lease, unsigned cpu, uint64
   if (!generation || !lease.watchdogHeld() || !lease.valid(cpu, generation) || r.cpu() != cpu) { w.status=12; return; }
   const uint64_t idle = r.idleEpoch();
   if (idle == UINT64_MAX || (idle & 1)) { w.status=13; return; }
+  // From the first PMU-related read until a normal return, a trap must
+  // leave the caller-visible state unresolved and the watchdog gate held.
+  w.cleanup=ArmCpuCleanupUnknown; w.started=true;
   const uint64_t version = (r.id() >> 8) & 15;
-  if (version == 0 || version == 15) { w.status=1; return; }
-  w.frequency=r.frequency(); if(w.frequency<1000 || w.frequency>1000000000) {w.status=2;return;}
+  if (version == 0 || version == 15) { w.status=1; w.started=false; w.cleanup=ArmCpuCleanupUntouched; return; }
+  w.frequency=r.frequency(); if(w.frequency<1000 || w.frequency>1000000000) {w.status=2;w.started=false;w.cleanup=ArmCpuCleanupUntouched;return;}
   w.originalPmcr=r.pmcr(); const uint64_t enabled=r.enabled(); w.filter=r.filter();
   const uint64_t interrupts=r.interrupts(); w.overflow=r.overflow();
-  if ((w.originalPmcr & 1) || enabled || (w.filter & 0xfc000000ULL) || interrupts || w.overflow) {w.status=3;return;}
+  if ((w.originalPmcr & 1) || enabled || (w.filter & 0xfc000000ULL) || interrupts || w.overflow) {w.status=3;w.started=false;w.cleanup=ArmCpuCleanupUntouched;return;}
   w.originalCycles=r.cycle(); w.originalPmcr &= ~6ULL;
-  w.cleanup=ArmCpuCleanupUnknown; w.started=true; // recovery gate is already held before the first write
   r.set_cycle(0); r.set_pmcr((w.originalPmcr & ~(8ULL|64ULL))|1); r.enable_cycle(); r.barrier();
   w.idleEpoch=idle;
   w.before=r.time(); w.cycles=r.cycle(); w.after=r.time();

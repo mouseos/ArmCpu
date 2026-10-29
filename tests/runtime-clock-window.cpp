@@ -10,11 +10,13 @@ struct Regs {
  uint64_t time(){return now++;} void set_cycle(uint64_t x){++writes;if(!(ignoreRestore && x==123))value=x;if(x==123){if(restoreFault==1)filt=1;if(restoreFault==2)intr=1;if(restoreFault==3)ov=1;}} void set_pmcr(uint64_t x){++writes;if(!(ignoreControl&&x==8))control=x;}
  void enable_cycle(){++writes;enable=1ULL<<31;}void disable_cycle(){++writes;if(!ignoreDisable)enable=0;if(lateOverflow)ov|=1;}void clear_overflow(uint64_t x){++writes;ov&=~x;}void barrier(){}
 };
+struct FaultReadRegs : Regs { uint64_t id(){throw 43;} };
 struct FaultRegs : Regs { void set_pmcr(uint64_t){throw 42;} };
 int main(){
  Lease l;Regs r;ArmCpuRuntimeWindow w={};armcpu_runtime_window_begin(r,l,0,7,w);assert(w.started&&r.enable);r.now+=129;r.value=10000;
  auto x=armcpu_runtime_window_end(r,l,w);assert(x.status==0&&x.bounds.valid&&x.cycles==10000&&!w.started&&w.cleanup==ArmCpuCleanupRestored&&r.value==123&&r.control==8&&!r.enable);
  auto repeated=armcpu_runtime_window_end(r,l,w);assert(repeated.status==14&&!repeated.bounds.valid);
+ FaultReadRegs readFault;bool readFaultSeen=false;try{w={};armcpu_runtime_window_begin(readFault,l,0,7,w);}catch(int){readFaultSeen=true;}assert(readFaultSeen&&l.gate&&w.started&&w.cleanup==ArmCpuCleanupUnknown&&!readFault.writes);
  FaultRegs fault;bool faultSeen=false;try{w={};armcpu_runtime_window_begin(fault,l,0,7,w);}catch(int){faultSeen=true;}assert(faultSeen&&l.gate&&fault.writes==1&&w.cleanup==ArmCpuCleanupUnknown&&w.started);
  Lease absent;absent.held=false;Regs a;ArmCpuRuntimeWindow n={};armcpu_runtime_window_begin(a,absent,0,7,n);assert(n.status==12&&!n.started&&n.cleanup==ArmCpuCleanupUntouched&&a.pmuReads==0&&a.writes==0);
  Lease noGate;noGate.gate=false;Regs noGateRegs;n={};armcpu_runtime_window_begin(noGateRegs,noGate,0,7,n);assert(n.status==12&&!noGateRegs.pmuReads&&!noGateRegs.writes);
