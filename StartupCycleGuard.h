@@ -11,7 +11,22 @@ template<typename Board, typename Registers>
 static ArmCpuCycleSample armcpu_startup_guarded_sample(Board &board, Registers &registers)
 {
   ArmCpuCycleSample sample = {};
-  if (!board.begin()) { sample.status = 12; return sample; }
+  // Secondary CPUs can arrive together. Retry only for a bounded period;
+  // a retained gate after interference must never be cleared by this CPU.
+  if (!board.begin()) {
+    const uint64_t frequency = registers.frequency();
+    if (frequency < 1000 || frequency > 1000000000) { sample.status = 12; return sample; }
+    const uint64_t start = registers.time(), limit = frequency / 100; // 10 ms
+    uint64_t previous = start;
+    bool acquired = false;
+    for (unsigned i = 0; i < 1000000; ++i) {
+      const uint64_t now = registers.time();
+      if (now - previous > UINT64_MAX / 2 || now - start >= limit) break;
+      previous = now;
+      if (board.begin()) { acquired = true; break; }
+    }
+    if (!acquired) { sample.status = 12; return sample; }
+  }
   if (!board.recoveryReady()) { board.end(); sample.status = 13; return sample; }
   sample = armcpu_cycle_sample(registers, 0, 0, true);
   if (sample.status != 11) board.end();
