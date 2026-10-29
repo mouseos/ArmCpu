@@ -50,6 +50,7 @@ static inline bool armcpu_active_end(ArmCpuActiveClock &s, const ArmCpuActivePoi
   s.cycles += p.cycles - b.cycles; s.minTicks += x.minTicks; s.maxTicks += x.maxTicks;
   s.lastAfter = p.after; s.lastCycles = p.cycles; s.haveLast = true; s.open = false; ++s.intervals; return true;
 }
+// Historical aggregation validity only; it is not a current lease query.
 static inline ArmCpuCycleBounds armcpu_active_result(const ArmCpuActiveClock &s)
 {
   ArmCpuCycleBounds out = {};

@@ -30,6 +30,21 @@ int main() {
   ArmCpuActiveClock genGap={};assert(armcpu_active_begin(genGap,a));assert(armcpu_active_end(genGap,b));other=c;other.leaseGeneration=8;assert(!armcpu_active_begin(genGap,other));
   ArmCpuActiveClock freqGap={};assert(armcpu_active_begin(freqGap,a));assert(armcpu_active_end(freqGap,b));other=c;other.frequency=26000000;assert(!armcpu_active_begin(freqGap,other));
   ArmCpuActiveClock reset={};other=a;other.pmcr=3;assert(!armcpu_active_begin(reset,other));
+  ArmCpuActiveClock configInside={};assert(armcpu_active_begin(configInside,a));other=b;other.filter=1;assert(!armcpu_active_end(configInside,other));assert(!armcpu_active_result(configInside).valid);
+  ArmCpuActiveClock pmcrGap={};assert(armcpu_active_begin(pmcrGap,a));assert(armcpu_active_end(pmcrGap,b));other=c;other.pmcr|=128;assert(!armcpu_active_begin(pmcrGap,other));
+  ArmCpuActiveClock pmcrInside={};assert(armcpu_active_begin(pmcrInside,a));other=b;other.pmcr|=128;assert(!armcpu_active_end(pmcrInside,other));
+  ArmCpuActiveClock noStart={};assert(!armcpu_active_end(noStart,b));assert(!armcpu_active_result(noStart).valid);
+  ArmCpuActiveClock equal={};assert(armcpu_active_begin(equal,a));other=b;other.cycles=a.cycles;assert(!armcpu_active_end(equal,other));
+  ArmCpuActiveClock epoch={};other=a;other.leaseGeneration=0;assert(!armcpu_active_begin(epoch,other));
+  ArmCpuActiveClock enabled={};other=a;other.enabled=0;assert(!armcpu_active_begin(enabled,other));
+  ArmCpuActiveClock interrupts={};other=a;other.interrupts=1;assert(!armcpu_active_begin(interrupts,other));
+  ArmCpuActiveClock filter={};other=a;other.filter=1ULL<<31;assert(!armcpu_active_begin(filter,other));
+  ArmCpuActiveClock wide={};other=a;other.cycles=1ULL<<32;assert(!armcpu_active_begin(wide,other));
+  ArmCpuActiveClock freqLow={};other=a;other.frequency=1000;assert(armcpu_active_begin(freqLow,other));
+  ArmCpuActiveClock freqHigh={};other=a;other.frequency=1000000000;assert(armcpu_active_begin(freqHigh,other));
+  ArmCpuActiveClock countLimit={};countLimit.intervals=UINT32_MAX;countLimit.cpu=0;countLimit.generation=7;countLimit.frequency=13000000;assert(armcpu_active_begin(countLimit,a));assert(!armcpu_active_end(countLimit,b));
+  auto wb=armcpu_active_result(timerWrap);assert(wb.minTicks==129&&wb.maxTicks==133&&wb.lowerHz==977443609&&wb.upperHz==1007751938);
+  auto half=UINT64_MAX/2;assert(armcpu_cycle_bounds(1,1,0,0,half,half).valid);assert(!armcpu_cycle_bounds(1,1,0,0,half+1,half+1).valid);assert(!armcpu_cycle_bounds(1,1,0,1,half,half+1).valid);
   ArmCpuActiveClock pending={};assert(armcpu_active_begin(pending,a));assert(!armcpu_active_result(pending).valid);assert(!armcpu_active_begin(pending,a));
   puts("PASS active-only interval bounds and fail-closed sample validation");
 }
