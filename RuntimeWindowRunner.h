@@ -3,6 +3,7 @@
 #include "RuntimeClockWindow.h"
 #ifndef ARMCPU_RUNTIME_TEST
 extern "C" uint64_t unixnu_idle_epoch_current(unsigned);
+extern "C" bool a04br3_pmu_qualification_available(unsigned);
 extern "C" bool a04br3_pmu_lease_acquire(unsigned, uint64_t *);
 extern "C" bool a04br3_pmu_lease_valid(unsigned, uint64_t);
 extern "C" bool a04br3_pmu_lease_release(unsigned, uint64_t);
@@ -39,6 +40,8 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
     if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE)) break;
     if (!ml_get_interrupts_enabled()) break;
     if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE)) continue;
+    // Advisory preflight only: acquisition must recheck qualification.
+    if (!a04br3_pmu_qualification_available(cpu)) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=pmu-unqualified\n",cpu);continue;}
     if (!armcpu_runtime_try_hotplug_lock()) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=hotplug-busy\n",cpu);continue;}
     processor_t target=cpu_to_processor(static_cast<int>(cpu));
     if (armcpu_quiesce_calls || armcpu_halt_calls || (cpu && armcpu_smp_step[cpu]!=7) ||

@@ -14,14 +14,14 @@ static unsigned samples = 0, logs = 0, terminations = 0, bindCount = 0;
 static bool owner=true, hotplugAvailable=true, hotplugLocked=false, lateBind=false, watchdogArmed=true, interference=false;
 static bool a04br3_runtime_recovery_recheck(){return watchdogArmed;}
 static volatile uint32_t a04br3_runtime_recovery_ready=1, a04br3_runtime_probe_active=0;
-static bool watchdogGateAvailable=true;
-static bool a04br3_runtime_probe_begin(){if(!watchdogGateAvailable || a04br3_runtime_probe_active)return false;a04br3_runtime_probe_active=1;return true;}
+static bool watchdogGateAvailable=true; static unsigned gateBegins=0;
+static bool a04br3_runtime_probe_begin(){++gateBegins;if(!watchdogGateAvailable || a04br3_runtime_probe_active)return false;a04br3_runtime_probe_active=1;return true;}
 static void a04br3_runtime_probe_end(){a04br3_runtime_probe_active=0;}
 static uint64_t uptime=0;
 static volatile uint32_t armcpu_quiesce_calls=0, armcpu_halt_calls=0, armcpu_smp_step[8]={0,7,7,7};
 static void clock_interval_to_deadline(unsigned, unsigned, uint64_t *d){*d=uptime+250;}
 static void clock_get_uptime(uint64_t *t){*t=uptime;}
-static uint64_t now = 0, counter = 77, control = 8;
+static uint64_t now = 0, counter = 77, control = 8; static unsigned pmuReads=0;
 static processor_t cpu_to_processor(int i){return i < 4 ? &cpus[i] : nullptr;}
 static processor_t current_processor(){return current;}
 static bool armcpu_runtime_policy_allows(unsigned){return owner;}
@@ -46,10 +46,10 @@ struct ArmCpuCycleRegisters {
   uint64_t mpidr(){assert(irq&&!preempt);return static_cast<uint64_t>(current-cpus);}
   uint64_t counter(unsigned){assert(irq&&!preempt);now+=100; if(running) counterValueIncrement(); return now;}
   void counterValueIncrement(){::counter+=10000;}
-  uint64_t id(){return 1ULL<<8;} uint64_t frequency(){return 26000000;}
-  uint64_t pmcr(){return control;} uint64_t enabled(){return running ? ((1ULL << 31) | (interference ? 1ULL : 0ULL)) : 0;} uint64_t filter(){return 0;}
-  uint64_t interrupts(){return 0;} uint64_t overflow(){return 0;}
-  uint64_t cycle(){return ::counter;}
+  uint64_t id(){++pmuReads;return 1ULL<<8;} uint64_t frequency(){return 26000000;}
+  uint64_t pmcr(){++pmuReads;return control;} uint64_t enabled(){++pmuReads;return running ? ((1ULL << 31) | (interference ? 1ULL : 0ULL)) : 0;} uint64_t filter(){++pmuReads;return 0;}
+  uint64_t interrupts(){++pmuReads;return 0;} uint64_t overflow(){++pmuReads;return 0;}
+  uint64_t cycle(){++pmuReads;return ::counter;}
   uint64_t time(){return this->counter(source);}
   void clear_overflow(uint64_t){assert(false);}
   void set_cycle(uint64_t x){assert(irq&&!preempt);::counter=x;}
@@ -59,6 +59,8 @@ struct ArmCpuCycleRegisters {
   void barrier(){}
 };
 static bool leaseQualified=true, leaseActive=false, gateReleaseFailure=false, leaseReleaseFailure=false;static uint64_t leaseToken=0;
+static bool revokeAfterPreflight=false;
+static bool a04br3_pmu_qualification_available(unsigned){bool result=leaseQualified;if(revokeAfterPreflight)leaseQualified=false;return result;}
 static bool a04br3_pmu_lease_acquire(unsigned cpu,uint64_t *token){assert(a04br3_runtime_probe_active);if(!leaseQualified || leaseActive)return false;leaseActive=true;leaseToken=cpu+1;*token=leaseToken;return true;}
 static bool a04br3_pmu_lease_valid(unsigned cpu,uint64_t token){return leaseActive&&token==leaseToken&&token==cpu+1;}
 static bool a04br3_pmu_lease_release(unsigned cpu,uint64_t token){if(leaseReleaseFailure||!a04br3_pmu_lease_valid(cpu,token))return false;leaseActive=false;return true;}
@@ -68,13 +70,14 @@ static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return 
 #include "../RuntimeWindowRunner.h"
 int main(){
  armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&bound==nullptr&&control==8&&counter==77&&terminations==1&&loggedCpu==3&&loggedStatus==0);
- samples=logs=terminations=bindCount=0;leaseQualified=false;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&bindCount==8&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&terminations==1);
+ samples=logs=terminations=bindCount=gateBegins=pmuReads=0;leaseQualified=false;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&bindCount==0&&gateBegins==0&&pmuReads==0&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&terminations==1);
  leaseQualified=true;samples=logs=terminations=bindCount=0;triggerIdle=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!leaseActive&&terminations==1&&loggedStatus==13);
  triggerIdle=false;longSleep=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!armcpu_window_poison&&loggedStatus==16);longSleep=false;
  lateBind=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&!armcpu_window_poison&&!a04br3_runtime_probe_active);lateBind=false;
  leaseReleaseFailure=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==1&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&loggedStatus==15);leaseReleaseFailure=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;
  failRecoveryDuringSleep=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==1&&!running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&loggedStatus==15);failRecoveryDuringSleep=false;watchdogArmed=true;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;
- samples=logs=terminations=bindCount=0;leaseQualified=false;gateReleaseFailure=true;armcpu_runtime_window_worker(nullptr,0);assert(armcpu_window_poison&&a04br3_runtime_probe_active&&bindCount==2);gateReleaseFailure=false;leaseQualified=true;armcpu_window_poison=0;a04br3_runtime_probe_active=0;
+ samples=logs=terminations=bindCount=gateBegins=pmuReads=0;leaseQualified=true;revokeAfterPreflight=true;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==2&&gateBegins==1&&pmuReads==0&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!leaseActive);revokeAfterPreflight=false;
+ samples=logs=terminations=bindCount=0;leaseQualified=true;revokeAfterPreflight=true;gateReleaseFailure=true;armcpu_runtime_window_worker(nullptr,0);assert(armcpu_window_poison&&a04br3_runtime_probe_active&&bindCount==2);gateReleaseFailure=false;leaseQualified=true;revokeAfterPreflight=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;
  samples=logs=terminations=bindCount=0;interference=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1&&loggedStatus==11);
  unsigned previousBinds=bindCount;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==previousBinds&&armcpu_window_poison&&a04br3_runtime_probe_active);
  puts("PASS runtime window worker: CPU0-3, scheduler interval, fail-closed lease, idle and watchdog quarantine");
