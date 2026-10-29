@@ -43,7 +43,8 @@ registers can only be programmed by the core that owns them.
 
 ### Opt-in secondary cycle-clock diagnostic
 
-With GICv2 and `sheng-smp=1`, `armcpu-cycle-clock=1` samples the PMU cycle
+With GICv2 and `sheng-smp=1`, `armcpu-cycle-clock=1` (or `cc=1` when the
+long option is absent) samples the PMU cycle
 counter on each secondary during `initCPU`, before enabling interrupts. The
 completed sample and that core's MPIDR are published to an independent,
 interrupts-enabled reporter thread. It reports `cycle-clock-start` with the

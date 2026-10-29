@@ -540,7 +540,8 @@ bool ArmCpu::start (IOService *provider)
   PE_parse_boot_argn ("armcpu-diagnostics", &diagnostic, sizeof (diagnostic));
   diagnosePower = diagnostic == 1; // per CPU instance
   unsigned cycleClock = 0;
-  PE_parse_boot_argn ("armcpu-cycle-clock", &cycleClock, sizeof (cycleClock));
+  if (!PE_parse_boot_argn ("armcpu-cycle-clock", &cycleClock, sizeof (cycleClock)))
+    PE_parse_boot_argn ("cc", &cycleClock, sizeof (cycleClock));
   diagnoseCycleClock = cycleClock == 1;
   uint32_t physical;
   OSData *reg = OSDynamicCast (OSData, provider->getProperty ("reg"));
@@ -883,7 +884,9 @@ void ArmCpu::initCPU (bool boot)
       unsigned selected = armcpu_timer_select(virtualAfter, physicalAfter);
       if (selected) {
         registers.source = selected - 1;
-        sample = armcpu_cycle_sample(registers);
+        // A visible concurrent PMU change invalidates the observation and
+        // must not be overwritten with the stale saved register state.
+        sample = armcpu_cycle_sample(registers, 0, 0, true);
         sample.timeSource = registers.source + 1;
       } else {
         sample.frequency = registers.frequency();
