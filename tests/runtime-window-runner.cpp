@@ -37,7 +37,8 @@ static bool ml_set_interrupts_enabled(bool on){bool old=irq;irq=on;return old;}
 static void disable_preemption(){assert(preempt);preempt=false;}
 static void enable_preemption(){assert(!preempt);preempt=true;}
 static uint64_t testEpoch=0; static bool triggerIdle=false, failRecoveryDuringSleep=false, longSleep=false, checkRepeatSleep=false;
-static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==5000 && checkRepeatSleep) assert(!running&&!a04br3_runtime_probe_active&&!hotplugLocked);if((ms==2 || ms==10) && running){now+=longSleep?1400000:26000;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
+static bool leaseActive=false; static unsigned repeatWaits=0, windowWaits=0;
+static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==5000 && checkRepeatSleep){assert(!running&&!leaseActive&&!bound&&!a04br3_runtime_probe_active&&!hotplugLocked && control==8 && counter==77);++repeatWaits;}if((ms==2 || ms==10) && running){if(checkRepeatSleep){assert(ms==10);++windowWaits;}now+=longSleep?1400000:13000*ms;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
 static unsigned loggedStatus=999, loggedCpu=999;static unsigned long long loggedMpidr=0;static char loggedLine[1024];
 static void IOLog(const char *format, ...){assert(irq && preempt);++logs;va_list ap;va_start(ap,format);vsnprintf(loggedLine,sizeof(loggedLine),format,ap);va_end(ap);unsigned cpu,status;unsigned long long mpidr;if(sscanf(loggedLine,"ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u",&cpu,&mpidr,&status)==3){loggedCpu=cpu;loggedMpidr=mpidr;loggedStatus=status;}}
 static int current_thread(){return 1;}
@@ -59,7 +60,7 @@ struct ArmCpuCycleRegisters {
   void disable_cycle(){assert(irq&&!preempt);running=false;++samples;}
   void barrier(){}
 };
-static bool leaseQualified=true, leaseActive=false, gateReleaseFailure=false, leaseReleaseFailure=false, failLaterRelease=false;static uint64_t leaseToken=0;
+static bool leaseQualified=true, gateReleaseFailure=false, leaseReleaseFailure=false, failLaterRelease=false;static uint64_t leaseToken=0;
 static bool revokeAfterPreflight=false;
 static bool a04br3_pmu_qualification_available(unsigned){bool result=leaseQualified;if(revokeAfterPreflight)leaseQualified=false;return result;}
 static bool a04br3_pmu_lease_acquire(unsigned cpu,uint64_t *token){assert(a04br3_runtime_probe_active);if(!leaseQualified || leaseActive)return false;leaseActive=true;leaseToken=cpu+1;*token=leaseToken;return true;}
@@ -92,7 +93,7 @@ int main(){
  samples=logs=terminations=bindCount=0;interference=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1&&loggedStatus==11);
  unsigned previousBinds=bindCount;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==previousBinds&&armcpu_window_poison&&a04br3_runtime_probe_active);
  interference=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;running=false;control=8;counter=77;
- samples=logs=terminations=bindCount=0;checkRepeatSleep=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==12&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!hotplugLocked&&terminations==1);
+ samples=logs=terminations=bindCount=0;checkRepeatSleep=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==12&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!hotplugLocked&&terminations==1&&repeatWaits==3&&windowWaits==12);
  samples=logs=terminations=bindCount=0;failLaterRelease=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==5&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1);
  puts("PASS runtime window worker: CPU0-3, scheduler interval, fail-closed lease, idle and watchdog quarantine");
 }

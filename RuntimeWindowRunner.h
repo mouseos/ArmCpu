@@ -55,6 +55,7 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
   }
   if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE) && ml_get_interrupts_enabled())
     IOLog("ArmCpu: runtime-window unavailable=recovery-not-ready\n");
+  unsigned completedRounds=0;
   for (unsigned round=0;round<rounds;++round) {
   if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE) || !ml_get_interrupts_enabled()) break;
   if (round) IOSleep(ARMCPU_RUNTIME_REPEAT_DELAY_MS);
@@ -62,7 +63,7 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE)) break;
     if (!ml_get_interrupts_enabled()) break;
     if (repeat) IOLog("ArmCpu: runtime-attempt round=%u cpu=%u\n",round,cpu);
-    if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE)) continue;
+    if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE)) {if (repeat) IOLog("ArmCpu: runtime-skip cpu=%u reason=recovery-not-ready\n",cpu);continue;}
     // Advisory preflight only: acquisition must recheck qualification.
     if (!a04br3_pmu_qualification_available(cpu)) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=pmu-unqualified\n",cpu);continue;}
     if (!armcpu_runtime_try_hotplug_lock()) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=hotplug-busy\n",cpu);continue;}
@@ -74,14 +75,18 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     processor_t previous=thread_bind(target);thread_block(THREAD_CONTINUE_NULL);
     uint64_t resumed;clock_get_uptime(&resumed);
     if (resumed>=deadline || !a04br3_runtime_recovery_recheck()) {
-      bool ended=armcpu_window_end_gate();thread_bind(previous);armcpu_runtime_hotplug_unlock();if (!ended) break;
+      bool ended=armcpu_window_end_gate();thread_bind(previous);armcpu_runtime_hotplug_unlock();
+      if (repeat && ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-skip cpu=%u reason=bind-deadline-or-recovery gate_released=%u\n",cpu,static_cast<unsigned>(ended));
+      if (!ended) break;
       continue;
     }
     uint64_t generation=0;
     const bool acquired=a04br3_pmu_lease_acquire(cpu,&generation);
     if (acquired && !generation) {
       __atomic_store_n(&armcpu_window_poison,1U,__ATOMIC_RELEASE);
-      thread_bind(previous);armcpu_runtime_hotplug_unlock();break;
+      thread_bind(previous);armcpu_runtime_hotplug_unlock();
+      if (repeat && ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-skip cpu=%u reason=invalid-generation quarantine=1\n",cpu);
+      break;
     }
     if (!acquired) {
       bool ended=armcpu_window_end_gate();thread_bind(previous);armcpu_runtime_hotplug_unlock();
@@ -170,6 +175,8 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     }
     if (!safe) break;
   }
+  if (!__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE) && ml_get_interrupts_enabled()) ++completedRounds;
   }
+  if (repeat && ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-finished rounds=%u reason=%s\n",completedRounds,__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE) ? "quarantine" : "complete");
   thread_terminate(current_thread());
 }
