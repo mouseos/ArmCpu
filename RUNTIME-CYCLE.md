@@ -44,14 +44,21 @@ a stale snapshot over another actor, and keeps the board watchdog unfed.
 Watchdog recovery is an intended fallback, not a guarantee. Undetected changes
 remain possible. The generated CONFIG_CPU_COUNTERS=0 disables the normal XNU
 KPC/monotonic integration; R5 showed secondary CPUs 1–3 completing the startup
-PMU probe. Neither fact proves that EL2, EL3, firmware or debug agents never
-access the PMU. CPU0 PMU access has not been directly validated. The explicit
+PMU probe. R8 also produced samples on CPU0, but from a different kernel and
+with assumed ownership. Neither observation proves that EL2, EL3, firmware or
+debug agents never access the PMU in the current build. The explicit
 boot flag and recovery path authorize an experiment, not proof that traps or
 conflicting external ownership are impossible.
 
 The host tests model CPU binding, lock refusal, failed recovery, timeout, PMU
 busy refusal, restoration and IRQ-safe logging. They cannot prove hardware
 access, scheduling deadlines, watchdog recovery or external PMU ownership.
+
+The board's nonblocking watchdog gate serializes its own normal feeder with
+the transition into probing. A busy gate rejects the sample. The recovery
+recheck reads both MODE and LENGTH as well as the RTC fastboot bit. This does
+not prevent other agents or explicit reset paths from feeding, disabling, or
+resetting the watchdog, nor prove that a trapped CPU will recover.
 
 The worker rechecks the RTC fastboot bit and watchdog enable after binding;
 known board WACS2 users share a nonblocking lock. These are observations, not

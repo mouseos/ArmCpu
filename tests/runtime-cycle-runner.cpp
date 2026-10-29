@@ -14,6 +14,9 @@ static unsigned samples = 0, logs = 0, terminations = 0, bindCount = 0;
 static bool owner=true, hotplugAvailable=true, hotplugLocked=false, lateBind=false, watchdogArmed=true, interference=false;
 static bool a04br3_runtime_recovery_recheck(){return watchdogArmed;}
 static volatile uint32_t a04br3_runtime_recovery_ready=1, a04br3_runtime_probe_active=0;
+static bool watchdogGateAvailable=true;
+static bool a04br3_runtime_probe_begin(){if(!watchdogGateAvailable || a04br3_runtime_probe_active)return false;a04br3_runtime_probe_active=1;return true;}
+static void a04br3_runtime_probe_end(){a04br3_runtime_probe_active=0;}
 static uint64_t uptime=0;
 static volatile uint32_t armcpu_quiesce_calls=0, armcpu_halt_calls=0, armcpu_smp_step[8]={0,7,7,7};
 static void clock_interval_to_deadline(unsigned, unsigned, uint64_t *d){*d=uptime+250;}
@@ -72,6 +75,10 @@ int main(){
   owner=true; hotplugAvailable=false; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==0 && !hotplugLocked);
+  hotplugAvailable=true; watchdogGateAvailable=false; samples=logs=terminations=bindCount=0;
+  armcpu_runtime_cycle_worker(nullptr,0);
+  assert(samples==0 && logs==12 && terminations==1 && bindCount==0 && !hotplugLocked && !a04br3_runtime_probe_active);
+  watchdogGateAvailable=true;
   hotplugAvailable=true; lateBind=true; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
   assert(samples==0 && logs==12 && terminations==1 && bindCount==24 && !hotplugLocked);

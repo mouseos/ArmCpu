@@ -16,6 +16,8 @@ extern "C" kern_return_t processor_info(processor_t, processor_flavor_t, host_t 
 extern "C" lck_mtx_t processor_updown_lock;
 extern "C" volatile uint32_t a04br3_runtime_recovery_ready, a04br3_runtime_probe_active;
 extern "C" bool a04br3_runtime_recovery_recheck(void);
+extern "C" bool a04br3_runtime_probe_begin(void);
+extern "C" void a04br3_runtime_probe_end(void);
 static bool armcpu_runtime_online(processor_t p, unsigned cpu) {
   processor_basic_info_data_t info = {};
   mach_msg_type_number_t count = PROCESSOR_BASIC_INFO_COUNT;
@@ -81,13 +83,17 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
       uint64_t deadline;
       clock_interval_to_deadline (250, 1000000, &deadline);
       // Keep fastboot WDT effective even if the bound worker never resumes.
-      __atomic_store_n(&a04br3_runtime_probe_active, 1U, __ATOMIC_RELEASE);
+      if (!a04br3_runtime_probe_begin()) {
+        armcpu_runtime_hotplug_unlock();
+        ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=watchdog-gate-busy\n", cpu, round);
+        continue;
+      }
       processor_t previous = thread_bind(target);
       thread_block(THREAD_CONTINUE_NULL);
       uint64_t resumed;
       clock_get_uptime (&resumed);
       if (resumed >= deadline) {
-        __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
+        a04br3_runtime_probe_end();
         thread_bind(previous);
         armcpu_runtime_hotplug_unlock();
         ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=bind-deadline\n", cpu, round);
@@ -96,7 +102,7 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
       // Re-read RTC and watchdog after binding, with IRQs enabled. The board
       // returns false on contention or a failed read; this is not an EL lease.
       if (!a04br3_runtime_recovery_recheck()) {
-        __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
+        a04br3_runtime_probe_end();
         thread_bind(previous);
         armcpu_runtime_hotplug_unlock();
         ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=recovery-recheck-failed\n", cpu, round);
@@ -136,7 +142,7 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
       // PMU may still be enabled and belongs to an unknown actor. Preserve its
       // state and let the recovery watchdog attempt to return to fastboot.
       if (sample.status != 11)
-        __atomic_store_n(&a04br3_runtime_probe_active, 0U, __ATOMIC_RELEASE);
+        a04br3_runtime_probe_end();
       thread_bind(previous);
       armcpu_runtime_hotplug_unlock();
       if (ml_get_interrupts_enabled ()) {
