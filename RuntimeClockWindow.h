@@ -11,10 +11,12 @@
 // migration/preemption around both register operation sequences.
 // It must run begin and end on the same CPU; callers retain the watchdog gate
 // on status 11 and stop all further probes. No busy loop occurs here.
+enum ArmCpuWindowCleanup { ArmCpuCleanupUnknown=0, ArmCpuCleanupUntouched=1, ArmCpuCleanupRestored=2 };
 struct ArmCpuRuntimeWindow {
   uint64_t generation, originalPmcr, originalCycles, filter, overflow, frequency;
   uint64_t idleEpoch, before, after, cycles;
   unsigned cpu, status;
+  ArmCpuWindowCleanup cleanup;
   bool started;
 };
 struct ArmCpuRuntimeWindowResult {
@@ -25,7 +27,7 @@ struct ArmCpuRuntimeWindowResult {
 template<class R, class Lease>
 static ArmCpuRuntimeWindow armcpu_runtime_window_begin(R &r, Lease &lease, unsigned cpu, uint64_t generation)
 {
-  ArmCpuRuntimeWindow w = {}; w.cpu = cpu; w.generation = generation;
+  ArmCpuRuntimeWindow w = {}; w.cpu = cpu; w.generation = generation; w.cleanup=ArmCpuCleanupUntouched;
   if (!generation || !lease.watchdogHeld() || !lease.valid(cpu, generation) || r.cpu() != cpu) { w.status=12; return w; }
   const uint64_t idle = r.idleEpoch();
   if (idle == UINT64_MAX || (idle & 1)) { w.status=13; return w; }
@@ -36,7 +38,7 @@ static ArmCpuRuntimeWindow armcpu_runtime_window_begin(R &r, Lease &lease, unsig
   const uint64_t interrupts=r.interrupts(); w.overflow=r.overflow();
   if ((w.originalPmcr & 1) || enabled || (w.filter & 0xfc000000ULL) || interrupts || w.overflow) {w.status=3;return w;}
   w.originalCycles=r.cycle(); w.originalPmcr &= ~6ULL;
-  w.started=true; // recovery gate is already held before the first write
+  w.cleanup=ArmCpuCleanupUnknown; w.started=true; // recovery gate is already held before the first write
   r.set_cycle(0); r.set_pmcr((w.originalPmcr & ~(8ULL|64ULL))|1); r.enable_cycle(); r.barrier();
   w.idleEpoch=idle;
   w.before=r.time(); w.cycles=r.cycle(); w.after=r.time();
@@ -69,7 +71,7 @@ static ArmCpuRuntimeWindowResult armcpu_runtime_window_end(R &r, Lease &lease, A
       r.interrupts() || r.overflow()!=w.overflow || r.cycle()!=w.originalCycles) {
     out.status=11;w.status=11;return out;
   }
-  w.started=false;
+  w.cleanup=ArmCpuCleanupRestored; w.started=false;
   out.beginBefore=w.before;out.beginAfter=w.after;
   if (timerChanged) {out.status=w.status=9;return out;}
   if (idleAfter!=w.idleEpoch || (idleAfter&1) || idleAfter==UINT64_MAX) {out.status=w.status=13;return out;}
