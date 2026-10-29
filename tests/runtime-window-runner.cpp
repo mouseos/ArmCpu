@@ -77,7 +77,7 @@ static void (*a04br3_cpu_context_sample)(unsigned,unsigned,unsigned)=mock_contex
 #if ARMCPU_RUNTIME_ACTIVE
 static unsigned nearCalls=0; static bool nearFail=false;
 static bool mock_near_clock(uint64_t *out){assert(!preempt && irq && running && leaseActive && bound==current && hotplugLocked && a04br3_runtime_probe_active);++nearCalls;if(nearFail)return false;out[0]=now;out[1]=now+1;return true;}
-static bool (*a04br3_cpu_clock_near)(uint64_t *)=mock_near_clock;
+static bool (*a04br3_cpu_clock_near_v2)(uint64_t *)=mock_near_clock;
 #endif
 static bool unixnu_idle_epoch_observe(int *actual,uint64_t *epoch,unsigned *reason,uint64_t *old,uint64_t *seen,unsigned *entry){*actual=(int)(current-cpus);*epoch=testEpoch;*reason=0;*old=0;*seen=0;*entry=0;return true;}
 static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return current==&cpus[cpu]?testEpoch:UINT64_MAX;}
@@ -115,8 +115,8 @@ int main(){
  assert(nearCalls==8*ARMCPU_RUNTIME_REPEAT_ROUNDS);
  samples=logs=terminations=bindCount=contexts=0;timeLogs=0;lastTimeEnd=0;nearCalls=0;nearFail=true;
  armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(nearCalls==8*ARMCPU_RUNTIME_REPEAT_ROUNDS && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS && loggedStatus==0);nearFail=false;
- samples=logs=terminations=bindCount=contexts=0;timeLogs=0;lastTimeEnd=0;nearCalls=0;a04br3_cpu_clock_near=nullptr;
- armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!nearCalls && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS && loggedStatus==0);a04br3_cpu_clock_near=mock_near_clock;
+ samples=logs=terminations=bindCount=contexts=0;timeLogs=0;lastTimeEnd=0;nearCalls=0;a04br3_cpu_clock_near_v2=nullptr;
+ armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!nearCalls && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS && loggedStatus==0);a04br3_cpu_clock_near_v2=mock_near_clock;
 #endif
  samples=logs=terminations=bindCount=contexts=0;leaseQualified=false;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!contexts && !samples && !armcpu_window_poison);leaseQualified=true;
  samples=logs=terminations=bindCount=contexts=0;watchdogArmed=false;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(!contexts && !samples && !armcpu_window_poison);watchdogArmed=true;
