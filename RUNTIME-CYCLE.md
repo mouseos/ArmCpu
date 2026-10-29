@@ -146,3 +146,11 @@ successful `runtime-time` reports CNTVCT bounds and CNTFRQ for the following
 these are active-interval averages, excluding machine idle and idle IRQ handling.
 The timer remains uncalibrated and higher EL/debug PMU ownership unverified.
 This is an experimental opt-in, not a hardware watchdog recovery guarantee.
+
+`arw=3` is a separate opt-in context mode requiring the active backend. It
+performs the same bounded repeated windows and invokes an optional board hook
+before acquiring the PMU lease and after successful restoration and release.
+The hook reports board clock and load context independently; its reads and logs
+are not an atomic snapshot and instrumentation itself changes scheduling and
+load. Missing hooks and unavailable board data are recorded as such. The
+bracketing reads do not prove a register remained constant during a window.

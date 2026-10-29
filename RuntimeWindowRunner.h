@@ -16,6 +16,7 @@ extern "C" bool a04br3_pmu_lease_acquire(unsigned, uint64_t *);
 extern "C" bool a04br3_pmu_lease_valid(unsigned, uint64_t);
 extern "C" bool a04br3_pmu_lease_release(unsigned, uint64_t);
 extern "C" bool a04br3_runtime_probe_end_checked(void);
+extern "C" void a04br3_cpu_context_sample(unsigned, unsigned, unsigned) __attribute__((weak_import));
 #endif
 
 // One experiment per boot at a time. If a probe is interrupted or reports
@@ -44,6 +45,7 @@ struct ArmCpuWindowRegisters : ArmCpuCycleRegisters {
 static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
 {
   const bool repeat = parameter != nullptr;
+  const bool context = parameter == reinterpret_cast<void *>(2);
   const unsigned rounds = repeat ? ARMCPU_RUNTIME_REPEAT_ROUNDS : 1U;
   IOSleep(5000);
 #if ARMCPU_RUNTIME_ACTIVE
@@ -63,6 +65,8 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE)) break;
     if (!ml_get_interrupts_enabled()) break;
     if (repeat) IOLog("ArmCpu: runtime-attempt round=%u cpu=%u\n",round,cpu);
+    if (context && a04br3_cpu_context_sample) a04br3_cpu_context_sample(round,cpu,0);
+    else if (context) IOLog("ArmCpu: runtime-context unavailable=board-hook\n");
     if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE)) {if (repeat) IOLog("ArmCpu: runtime-skip cpu=%u reason=recovery-not-ready\n",cpu);continue;}
     // Advisory preflight only: acquisition must recheck qualification.
     if (!a04br3_pmu_qualification_available(cpu)) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=pmu-unqualified\n",cpu);continue;}
@@ -161,6 +165,7 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (safe) {gateReleased=armcpu_window_end_gate();safe=gateReleased;}
     if (safe) __atomic_store_n(&armcpu_window_poison,0U,__ATOMIC_RELEASE);
     thread_bind(previous);armcpu_runtime_hotplug_unlock();
+    if (context && safe && a04br3_cpu_context_sample) a04br3_cpu_context_sample(round,cpu,1);
     if (!safe) { if (!result.status) result.status=15; result.cycles=0; result.bounds=ArmCpuCycleBounds{}; }
     if (ml_get_interrupts_enabled()) {
       if (result.status==13 && w.cleanup==ArmCpuCleanupUntouched) IOLog("ArmCpu: runtime-idle cpu=%u epoch=%llx actual=%d raw=%llx seen=%u reason=%u old=%llx cmp=%llx enter=%u\n",cpu,w.idleEpoch,idleActual,idleRaw,static_cast<unsigned>(idleObserved),idleReason,idleOld,idleSeen,idleEntry);

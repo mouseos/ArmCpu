@@ -71,6 +71,9 @@ static bool a04br3_pmu_lease_acquire(unsigned cpu,uint64_t *token){assert(a04br3
 static bool a04br3_pmu_lease_valid(unsigned cpu,uint64_t token){return leaseActive&&token==leaseToken&&token==cpu+1;}
 static bool a04br3_pmu_lease_release(unsigned cpu,uint64_t token){if(leaseReleaseFailure||(failLaterRelease && samples>=5)||!a04br3_pmu_lease_valid(cpu,token))return false;leaseActive=false;return true;}
 static bool a04br3_runtime_probe_end_checked(){if(gateReleaseFailure||leaseActive||!a04br3_runtime_probe_active)return false;a04br3_runtime_probe_end();return true;}
+static unsigned contexts=0;
+static void mock_context_sample(unsigned round,unsigned cpu,unsigned phase){assert(!running && !leaseActive && !a04br3_runtime_probe_active && !hotplugLocked && !bound);assert(round==contexts/8 && cpu==(contexts/2)%4 && phase==contexts%2);++contexts;}
+static void (*a04br3_cpu_context_sample)(unsigned,unsigned,unsigned)=mock_context_sample;
 static bool unixnu_idle_epoch_observe(int *actual,uint64_t *epoch,unsigned *reason,uint64_t *old,uint64_t *seen,unsigned *entry){*actual=(int)(current-cpus);*epoch=testEpoch;*reason=0;*old=0;*seen=0;*entry=0;return true;}
 static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return current==&cpus[cpu]?testEpoch:UINT64_MAX;}
 #if ARMCPU_RUNTIME_ACTIVE
@@ -98,6 +101,7 @@ int main(){
  unsigned previousBinds=bindCount;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==previousBinds&&armcpu_window_poison&&a04br3_runtime_probe_active);
  interference=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;running=false;control=8;counter=77;
  samples=logs=terminations=bindCount=0;checkRepeatSleep=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!hotplugLocked&&terminations==1&&repeatWaits==ARMCPU_RUNTIME_REPEAT_ROUNDS&&windowWaits==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&timeLogs==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&completeLogged&&finishedRounds==ARMCPU_RUNTIME_REPEAT_ROUNDS);
+ samples=logs=terminations=bindCount=0;timeLogs=0;lastTimeEnd=0;contexts=0;repeatWaits=windowWaits=0;armcpu_runtime_window_worker(reinterpret_cast<void *>(2),0);assert(contexts==8*ARMCPU_RUNTIME_REPEAT_ROUNDS && samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS);
  samples=logs=terminations=bindCount=0;timeLogs=0;lastTimeEnd=0;failLaterRelease=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==5&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1&&quarantineLogged&&finishedRounds==1);
  puts("PASS runtime window worker: CPU0-3, scheduler interval, fail-closed lease, idle and watchdog quarantine");
 }
