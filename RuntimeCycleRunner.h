@@ -21,10 +21,6 @@ static bool armcpu_runtime_online(processor_t p, unsigned cpu) {
   host_t host = nullptr;
   return processor_info(p, PROCESSOR_BASIC_INFO, &host, reinterpret_cast<processor_info_t>(&info), &count) == KERN_SUCCESS && info.running && info.slot_num == static_cast<int>(cpu);
 }
-// This machine-specific experiment is compiled only by the a04br3 build after
-// verifying CONFIG_CPU_COUNTERS=0. It assumes no higher-EL/debug PMU owner;
-// the hardware-idle check is still required and is not a global lease.
-static bool armcpu_runtime_policy_allows(unsigned cpu) { return ARMCPU_RUNTIME_A04BR3 && cpu < 4; }
 static bool armcpu_runtime_try_hotplug_lock() { return lck_mtx_try_lock(&processor_updown_lock); }
 static void armcpu_runtime_hotplug_unlock() { lck_mtx_unlock(&processor_updown_lock); }
 #else
@@ -54,14 +50,15 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
   for (unsigned round = 0; round < 3; ++round) {
     for (unsigned cpu = 0; cpu < 4; ++cpu) {
       if (!ml_get_interrupts_enabled ()) break;
+      // Refuse before touching recovery state, binding, or any PMU register.
+      if (!armcpu_runtime_policy_allows(cpu)) {
+        ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=ownership-or-access-unverified\n", cpu, round);
+        continue;
+      }
       // The boot CPU has not been probed before. The board's verified
       // fastboot flag and armed watchdog are mandatory for every PMU probe.
       if (!__atomic_load_n(&a04br3_runtime_recovery_ready, __ATOMIC_ACQUIRE)) {
         ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=recovery-not-ready\n", cpu, round);
-        continue;
-      }
-      if (!armcpu_runtime_policy_allows(cpu)) {
-        ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle cpu=%u round=%u unavailable=ownership-or-access-unverified\n", cpu, round);
         continue;
       }
       if (!armcpu_runtime_try_hotplug_lock()) {

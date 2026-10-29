@@ -7,4 +7,6 @@ int main() {
   assert(!armcpu_runtime_is_a04br3(bad,sizeof(bad)));
   assert(!armcpu_runtime_is_a04br3(nullptr,0));
   assert(!armcpu_runtime_is_a04br3(good,4));
+  for (unsigned cpu = 0; cpu != 8; ++cpu)
+    assert(!armcpu_runtime_policy_allows(cpu));
 }

@@ -1,5 +1,13 @@
 # a04br3 runtime cycle experiment
 
+The production policy currently refuses every CPU, even when explicitly
+compiled and requested. It does so before binding, stopping watchdog feeds or
+accessing PMU registers. Enabling measurement requires a separately reviewed
+system-wide ownership contract, higher-EL access evidence, and validated
+recovery; neither a boot flag nor CONFIG_CPU_COUNTERS=0 establishes these.
+The worker description below documents the experimental implementation, not
+an assurance that it is safe to enable on hardware.
+
 The generic ArmCpu build defaults `ARMCPU_RUNTIME_A04BR3` to 0. The a04br3
 device build may set it only after checking the generated XNU configuration
 has `CONFIG_CPU_COUNTERS=0`. The device default does not compile this experiment. Even when compiled, it is off unless the boot

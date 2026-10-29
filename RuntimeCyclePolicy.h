@@ -2,6 +2,14 @@
 #pragma once
 #include <stddef.h>
 
+// No system-wide PMU lease or higher-EL access guarantee is available yet.
+// A build flag, board identity, or idle register snapshot is not ownership.
+static inline bool armcpu_runtime_policy_allows(unsigned cpu)
+{
+  (void)cpu;
+  return false;
+}
+
 // The ADT compatible value is a NUL-delimited byte string, not an OSString.
 static inline bool armcpu_runtime_is_a04br3(const void *data, size_t size)
 {
