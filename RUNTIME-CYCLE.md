@@ -110,3 +110,16 @@ require a different, verified extension. IRQ time occurring between active
 boundaries is included, even though PMU interrupt-enable state must be zero.
 The active producer must define its treatment of WFI, EL filtering and secure
 execution before describing the resulting bounds as active CPU frequency.
+
+`RuntimeClockWindow.h` is a non-busy two-snapshot transaction prototype: it
+saves and enables the local cycle counter, permits other work between entry and
+exit, refuses any intervening idle epoch, then restores the original state. Its
+caller must provide a real exclusive, non-revocable per-CPU PMU lease and keep
+preemption disabled during each register sequence. It also must hold the board
+watchdog gate before the first access, release it only after positive evidence
+of complete restoration, and quarantine the boot on conflict or non-return.
+The `valid` and `watchdogHeld` methods are contract checks, not an ownership
+implementation. Endpoint comparisons cannot detect transient changes, and
+access traps, PMU counter behavior, reset, WDT recovery and elapsed timer
+calibration remain unverified. No target producer or lease provider is wired
+up; this prototype does not make runtime measurement available.
