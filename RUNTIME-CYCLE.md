@@ -81,3 +81,32 @@ entering the experimental sampling code.
 instructions in executable segments of a supplied arm64 Mach-O (requires the
 Python capstone package). Its report is static evidence, not proof of reachability,
 exclusive ownership, absence of dynamically generated code or higher-EL safety.
+
+## Active-interval calculation (not yet connected)
+
+`RuntimeActiveClock.h` computes a sum over explicitly identified active
+intervals and returns conservative bounds using timer brackets around each
+cycle read. It rejects missing lease or boundary evidence, migration, lease
+or configuration changes, ambiguous counter wrap, overflow, backwards time,
+invalid endpoint brackets and arithmetic overflow. It performs no hardware
+access. A boolean or generation supplied by an untrusted caller does not grant
+or prove a PMU lease; the producer must establish one, maintain it across all
+intervals and prevent another actor from changing and restoring state between
+snapshots. `activeBoundaryKnown` requires actual per-CPU execution/idle
+boundary hooks, not a boot option or a scheduler-utilization estimate.
+
+No production producer is connected: this calculator does not enable the
+runtime worker, touch the PMU, or make CPU0 measurable. Its bounds cover only
+endpoint timing in nominal CNTFRQ units, and do not prove PMCCNTR semantics
+across WFI, secure state, EL transitions, interrupts, or timer calibration.
+
+For a valid active-interval result, producers must prevent counter reset and
+any clearing of the cycle overflow flag throughout the lease, or independently
+prove every measured interval is shorter than the 32-bit wrap time. They must
+also guarantee the timer advances monotonically modulo its verified width and
+that each observed elapsed interval is less than half its range. The current
+calculator treats the timer as a 64-bit counter; narrower implementations
+require a different, verified extension. IRQ time occurring between active
+boundaries is included, even though PMU interrupt-enable state must be zero.
+The active producer must define its treatment of WFI, EL filtering and secure
+execution before describing the resulting bounds as active CPU frequency.
