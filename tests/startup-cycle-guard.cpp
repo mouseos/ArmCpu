@@ -7,8 +7,8 @@ struct Board {
  void end(){assert(active);++endCalls;active=false;}
 };
 struct Registers {
- uint64_t clock=0,value=123,control=8;bool enabledNow=false,conflict=false,stuck=false,backwards=false;unsigned writes=0;
- uint64_t id(){return 1ULL<<8;} uint64_t frequency(){return 13000000;}
+ uint64_t clock=0,value=123,control=8,freq=13000000;bool enabledNow=false,conflict=false,stuck=false,backwards=false;unsigned writes=0;
+ uint64_t id(){return 1ULL<<8;} uint64_t frequency(){return freq;}
  uint64_t pmcr(){return control;} uint64_t enabled(){return enabledNow?((1ULL<<31)|(conflict?1:0)):0;}
  uint64_t filter(){return 0;} uint64_t interrupts(){return 0;} uint64_t overflow(){return 0;}
  uint64_t cycle(){return value;} uint64_t time(){if(backwards)--clock;else if(!stuck)clock+=10;if(enabledNow)value+=1000;return clock;}
@@ -25,6 +25,9 @@ int main(){
  assert(s.status==12&&!a.writes&&!busy.active&&!busy.endCalls);
  Board late;late.busyCalls=1;Registers lateRegs;late.advanceClock=&lateRegs.clock;late.advanceBy=130000;
  s=armcpu_startup_guarded_sample(late,lateRegs);assert(s.status==12&&!late.active&&late.endCalls==1&&!lateRegs.writes);
+ Board low;low.available=false;Registers lowRegs;lowRegs.freq=999;s=armcpu_startup_guarded_sample(low,lowRegs);assert(s.status==12&&low.beginCalls==1&&!lowRegs.writes);
+ Board high;high.available=false;Registers highRegs;highRegs.freq=1000000001;s=armcpu_startup_guarded_sample(high,highRegs);assert(s.status==12&&high.beginCalls==1&&!highRegs.writes);
+ Board wrap;wrap.busyCalls=2;Registers wrapRegs;wrapRegs.clock=UINT64_MAX-15;s=armcpu_startup_guarded_sample(wrap,wrapRegs);assert(s.status==0&&!wrap.active&&wrap.endCalls==1);
  Board stalled;stalled.available=false;Registers t;t.stuck=true;s=armcpu_startup_guarded_sample(stalled,t);
  assert(s.status==12&&!t.writes&&stalled.beginCalls==1000001);
  Board reverse;reverse.available=false;Registers z;z.backwards=true;s=armcpu_startup_guarded_sample(reverse,z);
