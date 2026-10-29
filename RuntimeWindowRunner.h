@@ -85,6 +85,11 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
       else {w.status=11;result.status=11;}
       enable_preemption();
     } else result.status=w.status;
+    // IOSleep and rescheduling are not deadline guarantees. Refuse a window
+    // longer than 50 ms after restoration rather than reporting stale data.
+    if (!result.status && result.frequency && result.endAfter-result.beginBefore > result.frequency/20) {
+      result.status=16;result.cycles=0;result.bounds=ArmCpuCycleBounds{};
+    }
     bool safe=!w.started && recoveryStayed && (w.cleanup==ArmCpuCleanupUntouched || w.cleanup==ArmCpuCleanupRestored) && w.status!=11;
     bool leaseReleased=false, gateReleased=false;
     if (safe) {leaseReleased=a04br3_pmu_lease_release(cpu,generation);safe=leaseReleased;}

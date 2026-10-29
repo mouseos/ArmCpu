@@ -35,8 +35,8 @@ static bool ml_get_interrupts_enabled(){return irq;}
 static bool ml_set_interrupts_enabled(bool on){bool old=irq;irq=on;return old;}
 static void disable_preemption(){assert(preempt);preempt=false;}
 static void enable_preemption(){assert(!preempt);preempt=true;}
-static uint64_t testEpoch=0; static bool triggerIdle=false, failRecoveryDuringSleep=false;
-static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==2 && running){now+=26000;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
+static uint64_t testEpoch=0; static bool triggerIdle=false, failRecoveryDuringSleep=false, longSleep=false;
+static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==2 && running){now+=longSleep?1400000:26000;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
 static unsigned loggedStatus=999, loggedCpu=999;static unsigned long long loggedMpidr=0;static char loggedLine[1024];
 static void IOLog(const char *format, ...){assert(irq && preempt);++logs;va_list ap;va_start(ap,format);vsnprintf(loggedLine,sizeof(loggedLine),format,ap);va_end(ap);unsigned cpu,status;unsigned long long mpidr;if(sscanf(loggedLine,"ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u",&cpu,&mpidr,&status)==3){loggedCpu=cpu;loggedMpidr=mpidr;loggedStatus=status;}}
 static int current_thread(){return 1;}
@@ -58,10 +58,10 @@ struct ArmCpuCycleRegisters {
   void disable_cycle(){assert(irq&&!preempt);running=false;++samples;}
   void barrier(){}
 };
-static bool leaseQualified=true, leaseActive=false, gateReleaseFailure=false;static uint64_t leaseToken=0;
+static bool leaseQualified=true, leaseActive=false, gateReleaseFailure=false, leaseReleaseFailure=false;static uint64_t leaseToken=0;
 static bool a04br3_pmu_lease_acquire(unsigned cpu,uint64_t *token){assert(a04br3_runtime_probe_active);if(!leaseQualified || leaseActive)return false;leaseActive=true;leaseToken=cpu+1;*token=leaseToken;return true;}
 static bool a04br3_pmu_lease_valid(unsigned cpu,uint64_t token){return leaseActive&&token==leaseToken&&token==cpu+1;}
-static bool a04br3_pmu_lease_release(unsigned cpu,uint64_t token){if(!a04br3_pmu_lease_valid(cpu,token))return false;leaseActive=false;return true;}
+static bool a04br3_pmu_lease_release(unsigned cpu,uint64_t token){if(leaseReleaseFailure||!a04br3_pmu_lease_valid(cpu,token))return false;leaseActive=false;return true;}
 static bool a04br3_runtime_probe_end_checked(){if(gateReleaseFailure||leaseActive||!a04br3_runtime_probe_active)return false;a04br3_runtime_probe_end();return true;}
 static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return current==&cpus[cpu]?testEpoch:UINT64_MAX;}
 #include "../RuntimeCycleRunner.h"
@@ -70,7 +70,10 @@ int main(){
  armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&bound==nullptr&&control==8&&counter==77&&terminations==1&&loggedCpu==3&&loggedStatus==0);
  samples=logs=terminations=bindCount=0;leaseQualified=false;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&bindCount==8&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&terminations==1);
  leaseQualified=true;samples=logs=terminations=bindCount=0;triggerIdle=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!leaseActive&&terminations==1&&loggedStatus==13);
- triggerIdle=false;failRecoveryDuringSleep=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==1&&!running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&loggedStatus==15);failRecoveryDuringSleep=false;watchdogArmed=true;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;
+ triggerIdle=false;longSleep=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!armcpu_window_poison&&loggedStatus==16);longSleep=false;
+ lateBind=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&!armcpu_window_poison&&!a04br3_runtime_probe_active);lateBind=false;
+ leaseReleaseFailure=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==1&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&loggedStatus==15);leaseReleaseFailure=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;
+ failRecoveryDuringSleep=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==1&&!running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&loggedStatus==15);failRecoveryDuringSleep=false;watchdogArmed=true;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;
  samples=logs=terminations=bindCount=0;leaseQualified=false;gateReleaseFailure=true;armcpu_runtime_window_worker(nullptr,0);assert(armcpu_window_poison&&a04br3_runtime_probe_active&&bindCount==2);gateReleaseFailure=false;leaseQualified=true;armcpu_window_poison=0;a04br3_runtime_probe_active=0;
  samples=logs=terminations=bindCount=0;interference=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1&&loggedStatus==11);
  unsigned previousBinds=bindCount;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==previousBinds&&armcpu_window_poison&&a04br3_runtime_probe_active);
