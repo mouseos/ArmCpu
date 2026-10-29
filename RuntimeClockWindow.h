@@ -63,7 +63,13 @@ static ArmCpuRuntimeWindowResult armcpu_runtime_window_end(R &r, Lease &lease, A
   r.disable_cycle();r.barrier();uint64_t overflow=r.overflow();
   if ((overflow ^ w.overflow) & ~(1ULL<<31)) {out.status=11;w.status=11;return out;}
   if (overflow & (1ULL<<31)) r.clear_overflow(1ULL<<31);
-  r.set_pmcr(w.originalPmcr);r.set_cycle(w.originalCycles);r.barrier();w.started=false;
+  r.set_pmcr(w.originalPmcr);r.set_cycle(w.originalCycles);r.barrier();
+  // A caller may release the watchdog gate only after this readback succeeds.
+  if (((r.pmcr() ^ w.originalPmcr) & 0x7fULL) || r.enabled() || r.filter()!=w.filter ||
+      r.interrupts() || r.overflow()!=w.overflow || r.cycle()!=w.originalCycles) {
+    out.status=11;w.status=11;return out;
+  }
+  w.started=false;
   out.beginBefore=w.before;out.beginAfter=w.after;
   if (timerChanged) {out.status=w.status=9;return out;}
   if (idleAfter!=w.idleEpoch || (idleAfter&1) || idleAfter==UINT64_MAX) {out.status=w.status=13;return out;}

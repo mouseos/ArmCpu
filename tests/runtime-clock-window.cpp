@@ -3,11 +3,11 @@
 #include <cstdio>
 struct Lease {bool held=true,gate=true;unsigned calls=0,loseAt=0;bool watchdogHeld(){return gate;} bool valid(unsigned cpu,uint64_t gen){++calls;return held&&calls!=loseAt&&cpu==0&&gen==7;}};
 struct Regs {
- unsigned cpuId=0, pmuReads=0, writes=0;bool lateOverflow=false; uint64_t idle=0, now=100, value=123, control=8, enable=0, filt=0, intr=0, ov=0, freq=13000000;
+ unsigned cpuId=0, pmuReads=0, writes=0;bool lateOverflow=false,ignoreRestore=false; uint64_t idle=0, now=100, value=123, control=8, enable=0, filt=0, intr=0, ov=0, freq=13000000;
  unsigned cpu(){return cpuId;} uint64_t idleEpoch(){return idle;} uint64_t id(){return 1ULL<<8;} uint64_t frequency(){return freq;}
  uint64_t pmcr(){++pmuReads;return control;} uint64_t enabled(){++pmuReads;return enable;} uint64_t filter(){++pmuReads;return filt;}
  uint64_t interrupts(){++pmuReads;return intr;} uint64_t overflow(){++pmuReads;return ov;} uint64_t cycle(){++pmuReads;return value;}
- uint64_t time(){return now++;} void set_cycle(uint64_t x){++writes;value=x;} void set_pmcr(uint64_t x){++writes;control=x;}
+ uint64_t time(){return now++;} void set_cycle(uint64_t x){++writes;if(!(ignoreRestore && x==123))value=x;} void set_pmcr(uint64_t x){++writes;control=x;}
  void enable_cycle(){++writes;enable=1ULL<<31;}void disable_cycle(){++writes;enable=0;if(lateOverflow)ov|=1;}void clear_overflow(uint64_t x){++writes;ov&=~x;}void barrier(){}
 };
 struct FaultRegs : Regs { void set_pmcr(uint64_t){throw 42;} };
@@ -27,6 +27,7 @@ int main(){
  Regs migration;w=armcpu_runtime_window_begin(migration,l,0,7);migration.cpuId=1;before=migration.writes;x=armcpu_runtime_window_end(migration,l,w);assert(x.status==11&&migration.writes==before);
  Regs freq;w=armcpu_runtime_window_begin(freq,l,0,7);freq.freq=26000000;freq.now+=129;freq.value=10000;x=armcpu_runtime_window_end(freq,l,w);assert(x.status==9&&!x.bounds.valid&&!w.started&&freq.value==123&&freq.control==8&&freq.enable==0);
  Regs late;w=armcpu_runtime_window_begin(late,l,0,7);late.lateOverflow=true;late.now+=129;late.value=10000;x=armcpu_runtime_window_end(late,l,w);assert(x.status==11&&w.started&&late.control==1&&late.value==10000);before=late.writes;reads=late.pmuReads;x=armcpu_runtime_window_end(late,l,w);assert(x.status==11&&late.writes==before&&late.pmuReads==reads);
+ Regs restoreFail;w=armcpu_runtime_window_begin(restoreFail,l,0,7);restoreFail.now+=129;restoreFail.value=10000;restoreFail.ignoreRestore=true;x=armcpu_runtime_window_end(restoreFail,l,w);assert(x.status==11&&w.started&&restoreFail.value==10000);
  Regs wrapped;w=armcpu_runtime_window_begin(wrapped,l,0,7);wrapped.value=10000;wrapped.now+=129;wrapped.ov=1ULL<<31;x=armcpu_runtime_window_end(wrapped,l,w);assert(x.status==7&&!wrapped.ov&&wrapped.value==123);
  puts("PASS non-busy PMU transaction, idle refusal, conflict quarantine and restore");
 }
