@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
+#include "CycleBounds.h"
 #ifndef ARMCPU_RUNTIME_TEST
 #include <kern/processor.h>
 #include <kern/sched_prim.h>
@@ -146,6 +147,11 @@ static void armcpu_runtime_cycle_worker(void *, wait_result_t)
           ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-count cpu=%u ticks=%llu cycles=%llu outer=%llu\n", cpu, sample.ticks, sample.cycles, sample.outerTicks);
           ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-pmu cpu=%u pmcr=%llx enabled=%llx filter=%llx interrupts=%llx overflow=%llx after=%llx\n", cpu, sample.pmcr, sample.enabledBefore, sample.filter, sample.interrupts, sample.overflow, sample.overflowAfter);
           ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-window cpu=%u begin=%llu end=%llu busy=1 idle=unknown irq=enabled owner=unverified-kpc-disabled\n", cpu, sample.beginReadTicks, sample.endReadTicks);
+          if (!sample.status) {
+            ArmCpuCycleBounds bounds = armcpu_cycle_bounds(sample.cycles, sample.frequency, sample.beginBefore, sample.beginAfter, sample.endBefore, sample.endAfter);
+            if (bounds.valid) ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-bounds cpu=%u low_hz=%llu high_hz=%llu min_ticks=%llu max_ticks=%llu timer_calibration=unknown\n", cpu, bounds.lowerHz, bounds.upperHz, bounds.minTicks, bounds.maxTicks);
+            else ARMCPU_RUNTIME_LOG ("ArmCpu: runtime-cycle-bounds cpu=%u unavailable=invalid-interval\n", cpu);
+          }
         }
       }
       if (sample.status == 11) {

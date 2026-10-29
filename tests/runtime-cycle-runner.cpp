@@ -56,11 +56,11 @@ struct ArmCpuCycleRegisters {
 #include "../RuntimeCycleRunner.h"
 int main(){
   armcpu_runtime_cycle_worker(nullptr,0);
-  assert(samples==12 && logs==48 && terminations==1 && bindCount==24);
+  assert(samples==12 && logs==60 && terminations==1 && bindCount==24);
   assert(irq && preempt && !running && counter==77 && control==8 && bound==nullptr);
   cpus[2].state=0; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);
-  assert(samples==9 && logs==39 && terminations==1 && bindCount==18);
+  assert(samples==9 && logs==48 && terminations==1 && bindCount==18);
   assert(irq && preempt && !running && counter==77 && control==8);
   cpus[2].state=6; control=1; samples=logs=terminations=bindCount=0;
   armcpu_runtime_cycle_worker(nullptr,0);

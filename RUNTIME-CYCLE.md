@@ -60,3 +60,17 @@ which includes interrupt work; the outer-window limit rejects late results
 after the fact. No PMU check provides an exclusive lease against EL2, EL3,
 firmware, or debug agents.
 Do not treat a successful sample as proof of ownership or guaranteed recovery.
+
+For a successful interval, the worker additionally reports conservative
+integer frequency bounds derived from the timer reads immediately surrounding
+each PMCCNTR read. The lower bound is rounded down and the upper bound up.
+These bounds cover endpoint timing uncertainty only: they do not calibrate
+CNTFRQ, establish counter semantics, compensate for interrupts or identify
+an idle or instantaneous operating frequency. Invalid intervals produce no
+bounds. The currently unconditional refusal still prevents the worker from
+entering the experimental sampling code.
+
+`tools/audit-pmu-macho.py` inventories selected architectural PMU and MDCR
+instructions in executable segments of a supplied arm64 Mach-O (requires the
+Python capstone package). Its report is static evidence, not proof of reachability,
+exclusive ownership, absence of dynamically generated code or higher-EL safety.
