@@ -65,11 +65,11 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE)) break;
     if (!ml_get_interrupts_enabled()) break;
     if (repeat) IOLog("ArmCpu: runtime-attempt round=%u cpu=%u\n",round,cpu);
-    if (context && a04br3_cpu_context_sample) a04br3_cpu_context_sample(round,cpu,0);
-    else if (context) IOLog("ArmCpu: runtime-context unavailable=board-hook\n");
     if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE)) {if (repeat) IOLog("ArmCpu: runtime-skip cpu=%u reason=recovery-not-ready\n",cpu);continue;}
     // Advisory preflight only: acquisition must recheck qualification.
     if (!a04br3_pmu_qualification_available(cpu)) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=pmu-unqualified\n",cpu);continue;}
+    if (context && a04br3_cpu_context_sample) a04br3_cpu_context_sample(round,cpu,0);
+    else if (context) IOLog("ArmCpu: runtime-context unavailable=board-hook\n");
     if (!armcpu_runtime_try_hotplug_lock()) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=hotplug-busy\n",cpu);continue;}
     processor_t target=cpu_to_processor(static_cast<int>(cpu));
     if (armcpu_quiesce_calls || armcpu_halt_calls || (cpu && armcpu_smp_step[cpu]!=7) ||
