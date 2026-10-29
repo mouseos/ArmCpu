@@ -14,6 +14,9 @@
 #ifndef ARMCPU_RUNTIME_A04BR3
 #define ARMCPU_RUNTIME_A04BR3 0
 #endif
+#ifndef ARMCPU_RUNTIME_WINDOW_A04BR3
+#define ARMCPU_RUNTIME_WINDOW_A04BR3 0
+#endif
 
 // Exact private entry from Darwin 23 arm/rtclock.h. Its full data header is
 // not exported to IOKit; the IRQ path calls the real kernel implementation.
@@ -106,6 +109,9 @@ public:
 
 #if ARMCPU_RUNTIME_A04BR3
 static void armcpu_runtime_cycle_worker(void *, wait_result_t);
+#if ARMCPU_RUNTIME_WINDOW_A04BR3
+static void armcpu_runtime_window_worker(void *, wait_result_t);
+#endif
 #endif
 
 OSDefineMetaClassAndStructors (ArmCpu, IOCPU)
@@ -631,6 +637,22 @@ bool ArmCpu::start (IOService *provider)
     } else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-cycle error=board-mismatch\n");
   }
 #endif
+#if ARMCPU_RUNTIME_A04BR3 && ARMCPU_RUNTIME_WINDOW_A04BR3
+  unsigned runtimeWindow = 0;
+  bool windowSpecified = PE_parse_boot_argn ("armcpu-runtime-window", &runtimeWindow, sizeof (runtimeWindow));
+  if (!windowSpecified) windowSpecified = PE_parse_boot_argn ("arw", &runtimeWindow, sizeof (runtimeWindow));
+  if (gGicV2 && windowSpecified && runtimeWindow == 1 && !(runtimeSpecified && runtimeCycle == 1)) {
+    auto root = IORegistryEntry::fromPath ("/", gIODTPlane);
+    OSData *compatible = root ? OSDynamicCast (OSData, root->getProperty ("compatible")) : nullptr;
+    if (compatible && armcpu_runtime_is_a04br3 (compatible->getBytesNoCopy (), compatible->getLength ())) {
+      thread_t worker;
+      if (kernel_thread_start (&armcpu_runtime_window_worker, nullptr, &worker) == KERN_SUCCESS) thread_deallocate (worker);
+      else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-window error=thread-create\n");
+    } else if (ml_get_interrupts_enabled ()) IOLog ("ArmCpu: runtime-window error=board-mismatch\n");
+  } else if (windowSpecified && runtimeWindow == 1 && runtimeSpecified && runtimeCycle == 1 && ml_get_interrupts_enabled ()) {
+    IOLog ("ArmCpu: runtime-window error=cycle-option-conflict\n");
+  }
+#endif
   return true;
 }
 
@@ -837,6 +859,9 @@ struct ArmCpuCycleRegisters {
 };
 #if ARMCPU_RUNTIME_A04BR3
 #include "RuntimeCycleRunner.h"
+#if ARMCPU_RUNTIME_WINDOW_A04BR3
+#include "RuntimeWindowRunner.h"
+#endif
 #endif
 #endif
 

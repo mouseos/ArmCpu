@@ -95,8 +95,8 @@ intervals and prevent another actor from changing and restoring state between
 snapshots. `activeBoundaryKnown` requires actual per-CPU execution/idle
 boundary hooks, not a boot option or a scheduler-utilization estimate.
 
-No production producer is connected: this calculator does not enable the
-runtime worker, touch the PMU, or make CPU0 measurable. Its bounds cover only
+The active-interval calculator itself is not connected to the runtime worker
+and performs no PMU accesses. Its bounds cover only
 endpoint timing in nominal CNTFRQ units, and do not prove PMCCNTR semantics
 across WFI, secure state, EL transitions, interrupts, or timer calibration.
 
@@ -121,5 +121,14 @@ of complete restoration, and quarantine the boot on conflict or non-return.
 The `valid` and `watchdogHeld` methods are contract checks, not an ownership
 implementation. Endpoint comparisons cannot detect transient changes, and
 access traps, PMU counter behavior, reset, WDT recovery and elapsed timer
-calibration remain unverified. No target producer or lease provider is wired
-up; this prototype does not make runtime measurement available.
+calibration remain unverified. The optional `ARMCPU_RUNTIME_WINDOW_A04BR3` worker binds each CPU, keeps the
+watchdog gate and local lease during a 2 ms scheduler interval, and rejects a
+window if the XNU idle epoch changed. It requires `arw=1` or the long boot
+argument, a04br3 compatible, GICv2 and `XNU_ARMCPU_IDLE_EPOCH=1`. The board
+provider currently refuses every acquisition because upper-EL/debug ownership
+and access are unqualified: this build cannot produce measurements. Host mocks
+exercise the code but do not establish the missing platform contract. A WDT
+readback or past R8 result is not a PMU lease. The worker includes IRQ time and
+rejects intervals with any machine-idle transition. If recovery or release is
+not confirmed, it retains the gate and permanently quarantines further window
+probes for the boot; successful recovery is not guaranteed.
