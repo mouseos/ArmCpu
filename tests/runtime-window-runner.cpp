@@ -2,8 +2,11 @@
 #include <cassert>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #define ARMCPU_RUNTIME_TEST 1
+#ifndef ARMCPU_RUNTIME_REPEAT_ROUNDS
 #define ARMCPU_RUNTIME_REPEAT_ROUNDS 3U
+#endif
 using wait_result_t = int;
 struct CPU { int state; };
 using processor_t = CPU *;
@@ -38,9 +41,10 @@ static void disable_preemption(){assert(preempt);preempt=false;}
 static void enable_preemption(){assert(!preempt);preempt=true;}
 static uint64_t testEpoch=0; static bool triggerIdle=false, failRecoveryDuringSleep=false, longSleep=false, checkRepeatSleep=false;
 static bool leaseActive=false; static unsigned repeatWaits=0, windowWaits=0;
-static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==5000 && checkRepeatSleep){assert(!running&&!leaseActive&&!bound&&!a04br3_runtime_probe_active&&!hotplugLocked && control==8 && counter==77);++repeatWaits;}if((ms==2 || ms==10) && running){if(checkRepeatSleep){assert(ms==10);++windowWaits;}now+=longSleep?1400000:13000*ms;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
+static void IOSleep(unsigned ms){assert(irq && preempt);if(ms==5000 && checkRepeatSleep){assert(!running&&!leaseActive&&!bound&&!a04br3_runtime_probe_active&&!hotplugLocked && control==8 && counter==77);++repeatWaits;}if((ms==2 || ms==10) && running){if(checkRepeatSleep){assert(ms==10);++windowWaits;}now+=longSleep?1400000:26000*ms;counter+=2000000;if(triggerIdle)testEpoch+=2;if(failRecoveryDuringSleep)watchdogArmed=false;}}
+static unsigned timeLogs=0; static bool quarantineLogged=false, completeLogged=false;
 static unsigned loggedStatus=999, loggedCpu=999;static unsigned long long loggedMpidr=0;static char loggedLine[1024];
-static void IOLog(const char *format, ...){assert(irq && preempt);++logs;va_list ap;va_start(ap,format);vsnprintf(loggedLine,sizeof(loggedLine),format,ap);va_end(ap);unsigned cpu,status;unsigned long long mpidr;if(sscanf(loggedLine,"ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u",&cpu,&mpidr,&status)==3){loggedCpu=cpu;loggedMpidr=mpidr;loggedStatus=status;}}
+static void IOLog(const char *format, ...){assert(irq && preempt);++logs;va_list ap;va_start(ap,format);vsnprintf(loggedLine,sizeof(loggedLine),format,ap);va_end(ap);unsigned r,c;unsigned long long begin,end,freq; if(sscanf(loggedLine,"ArmCpu: runtime-time round=%u cpu=%u begin=%llu end=%llu timer_hz=%llu",&r,&c,&begin,&end,&freq)==5){assert(r==timeLogs/4 && c==timeLogs%4 && end>begin && freq==26000000);++timeLogs;} if(strstr(loggedLine,"runtime-finished") && strstr(loggedLine,"reason=quarantine"))quarantineLogged=true;if(strstr(loggedLine,"runtime-finished") && strstr(loggedLine,"reason=complete"))completeLogged=true;unsigned cpu,status;unsigned long long mpidr;if(sscanf(loggedLine,"ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u",&cpu,&mpidr,&status)==3){loggedCpu=cpu;loggedMpidr=mpidr;loggedStatus=status;}}
 static int current_thread(){return 1;}
 static void thread_terminate(int){++terminations;}
 struct ArmCpuCycleRegisters {
@@ -72,7 +76,7 @@ static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return 
 #if ARMCPU_RUNTIME_ACTIVE
 static bool fakeActiveStart=true, fakeActiveStop=true;
 static bool unixnu_pmuv3_active_start(unsigned cpu, uint64_t gen){assert(!irq && !preempt && current==&cpus[cpu] && gen);return fakeActiveStart;}
-static bool unixnu_pmuv3_active_stop(unsigned cpu,uint64_t gen,uint64_t *cy,uint64_t *mi,uint64_t *ma,unsigned *n){assert(!irq && !preempt && current==&cpus[cpu] && gen);*cy=2000000;*mi=26000;*ma=26200;*n=triggerIdle?2:1;return fakeActiveStop;}
+static bool unixnu_pmuv3_active_stop(unsigned cpu,uint64_t gen,uint64_t *cy,uint64_t *mi,uint64_t *ma,unsigned *n){assert(!irq && !preempt && current==&cpus[cpu] && gen);*cy=2000000;*mi=260000;*ma=260200;*n=triggerIdle?2:1;return fakeActiveStop;}
 #endif
 #include "../RuntimeCycleRunner.h"
 #include "../RuntimeWindowRunner.h"
@@ -93,7 +97,7 @@ int main(){
  samples=logs=terminations=bindCount=0;interference=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&running&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1&&loggedStatus==11);
  unsigned previousBinds=bindCount;armcpu_runtime_window_worker(nullptr,0);assert(bindCount==previousBinds&&armcpu_window_poison&&a04br3_runtime_probe_active);
  interference=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;running=false;control=8;counter=77;
- samples=logs=terminations=bindCount=0;checkRepeatSleep=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==12&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!hotplugLocked&&terminations==1&&repeatWaits==3&&windowWaits==12);
- samples=logs=terminations=bindCount=0;failLaterRelease=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==5&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1);
+ samples=logs=terminations=bindCount=0;checkRepeatSleep=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!hotplugLocked&&terminations==1&&repeatWaits==ARMCPU_RUNTIME_REPEAT_ROUNDS&&windowWaits==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&timeLogs==4*ARMCPU_RUNTIME_REPEAT_ROUNDS&&completeLogged);
+ samples=logs=terminations=bindCount=0;timeLogs=0;failLaterRelease=true;armcpu_runtime_window_worker(reinterpret_cast<void *>(1),0);assert(samples==5&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&terminations==1&&quarantineLogged);
  puts("PASS runtime window worker: CPU0-3, scheduler interval, fail-closed lease, idle and watchdog quarantine");
 }
