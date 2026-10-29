@@ -65,6 +65,7 @@ static bool a04br3_pmu_lease_acquire(unsigned cpu,uint64_t *token){assert(a04br3
 static bool a04br3_pmu_lease_valid(unsigned cpu,uint64_t token){return leaseActive&&token==leaseToken&&token==cpu+1;}
 static bool a04br3_pmu_lease_release(unsigned cpu,uint64_t token){if(leaseReleaseFailure||!a04br3_pmu_lease_valid(cpu,token))return false;leaseActive=false;return true;}
 static bool a04br3_runtime_probe_end_checked(){if(gateReleaseFailure||leaseActive||!a04br3_runtime_probe_active)return false;a04br3_runtime_probe_end();return true;}
+static bool unixnu_idle_epoch_observe(int *actual,uint64_t *epoch,unsigned *reason,uint64_t *old,uint64_t *seen,unsigned *entry){*actual=(int)(current-cpus);*epoch=testEpoch;*reason=0;*old=0;*seen=0;*entry=0;return true;}
 static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return current==&cpus[cpu]?testEpoch:UINT64_MAX;}
 #if ARMCPU_RUNTIME_ACTIVE
 static bool fakeActiveStart=true, fakeActiveStop=true;

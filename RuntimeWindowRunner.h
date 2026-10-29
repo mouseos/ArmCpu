@@ -6,6 +6,7 @@
 #endif
 #ifndef ARMCPU_RUNTIME_TEST
 extern "C" uint64_t unixnu_idle_epoch_current(unsigned);
+extern "C" bool unixnu_idle_epoch_observe(int *, uint64_t *, unsigned *, uint64_t *, uint64_t *, unsigned *);
 #if ARMCPU_RUNTIME_ACTIVE
 extern "C" bool unixnu_pmuv3_active_start(unsigned, uint64_t);
 extern "C" bool unixnu_pmuv3_active_stop(unsigned, uint64_t, uint64_t *, uint64_t *, uint64_t *, unsigned *);
@@ -37,6 +38,9 @@ struct ArmCpuWindowRegisters : ArmCpuCycleRegisters {
 static void armcpu_runtime_window_worker(void *, wait_result_t)
 {
   IOSleep(5000);
+#if ARMCPU_RUNTIME_ACTIVE
+  if (ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-scope machine-idle-excluded idle-irq-excluded ownership-unverified timer-uncalibrated\n");
+#endif
   for (unsigned i=0;i<200 && !__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE);++i) {
     if (!ml_get_interrupts_enabled()) break;
     IOSleep(100);
@@ -79,10 +83,12 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
     // non-return cannot accidentally permit a later probe in this boot.
     __atomic_store_n(&armcpu_window_poison,1U,__ATOMIC_RELEASE);
     disable_preemption();
+    int idleActual=-1; uint64_t idleRaw=UINT64_MAX,idleOld=0,idleSeen=0; unsigned idleReason=0,idleEntry=0; bool idleObserved=false;
     const uint64_t mpidr=regs.mpidr();
     if (current_processor()==target && (mpidr & 0xffffffULL)==cpu && ml_get_interrupts_enabled() && armcpu_timer_probe(regs,0).status==1)
       armcpu_runtime_window_begin(regs,lease,cpu,generation,w);
     else {w.status=10;w.cleanup=ArmCpuCleanupUntouched;}
+    if (w.status==13) idleObserved=unixnu_idle_epoch_observe(&idleActual,&idleRaw,&idleReason,&idleOld,&idleSeen,&idleEntry);
 #if ARMCPU_RUNTIME_ACTIVE
     bool activeStarted=false; uint64_t activeCycles=0,activeMin=0,activeMax=0,epochEnd=UINT64_MAX; unsigned activeIntervals=0;
     if (w.started && !w.status) {bool irq=ml_set_interrupts_enabled(false);activeStarted=unixnu_pmuv3_active_start(cpu,generation);ml_set_interrupts_enabled(irq);}
@@ -140,7 +146,8 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
     thread_bind(previous);armcpu_runtime_hotplug_unlock();
     if (!safe) { if (!result.status) result.status=15; result.cycles=0; result.bounds=ArmCpuCycleBounds{}; }
     if (ml_get_interrupts_enabled()) {
-      IOLog("ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u cleanup=%u recovery=%u lease_released=%u gate_released=%u quarantine=%u cntfrq=%llu cycles=%llu min_ticks=%llu max_ticks=%llu intervals=%u low_hz=%llu high_hz=%llu scope=outside-machine-idle idle-irq=excluded ownership=experimental-unverified timer=uncalibrated\n",cpu,mpidr,result.status,static_cast<unsigned>(w.cleanup),static_cast<unsigned>(recoveryStayed),static_cast<unsigned>(leaseReleased),static_cast<unsigned>(gateReleased),static_cast<unsigned>(!safe),result.frequency,result.cycles,result.bounds.minTicks,result.bounds.maxTicks,
+      if (result.status==13 && w.cleanup==ArmCpuCleanupUntouched) IOLog("ArmCpu: runtime-idle cpu=%u epoch=%llx actual=%d raw=%llx seen=%u reason=%u old=%llx cmp=%llx enter=%u\n",cpu,w.idleEpoch,idleActual,idleRaw,static_cast<unsigned>(idleObserved),idleReason,idleOld,idleSeen,idleEntry);
+      IOLog("ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u cleanup=%u recovery=%u lease_released=%u gate_released=%u quarantine=%u cntfrq=%llu cycles=%llu min_ticks=%llu max_ticks=%llu intervals=%u low_hz=%llu high_hz=%llu\n",cpu,mpidr,result.status,static_cast<unsigned>(w.cleanup),static_cast<unsigned>(recoveryStayed),static_cast<unsigned>(leaseReleased),static_cast<unsigned>(gateReleased),static_cast<unsigned>(!safe),result.frequency,result.cycles,result.bounds.minTicks,result.bounds.maxTicks,
 #if ARMCPU_RUNTIME_ACTIVE
             activeIntervals,
 #else

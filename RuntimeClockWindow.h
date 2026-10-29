@@ -33,6 +33,7 @@ static void armcpu_runtime_window_begin(R &r, Lease &lease, unsigned cpu, uint64
   w = {}; w.cpu = cpu; w.generation = generation; w.cleanup=ArmCpuCleanupUntouched;
   if (!generation || !lease.watchdogHeld() || !lease.valid(cpu, generation) || r.cpu() != cpu) { w.status=12; return; }
   const uint64_t idle = r.idleEpoch();
+  w.idleEpoch=idle;
   if (idle == UINT64_MAX || (idle & 1)) { w.status=13; return; }
   // From the first PMU-related read until a normal return, a trap must
   // leave the caller-visible state unresolved and the watchdog gate held.
