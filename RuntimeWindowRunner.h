@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include "RuntimeClockWindow.h"
+#ifndef ARMCPU_RUNTIME_ACTIVE
+#define ARMCPU_RUNTIME_ACTIVE 0
+#endif
 #ifndef ARMCPU_RUNTIME_TEST
 extern "C" uint64_t unixnu_idle_epoch_current(unsigned);
+#if ARMCPU_RUNTIME_ACTIVE
+extern "C" bool unixnu_pmuv3_active_start(unsigned, uint64_t);
+extern "C" bool unixnu_pmuv3_active_stop(unsigned, uint64_t, uint64_t *, uint64_t *, uint64_t *, unsigned *);
+#endif
 extern "C" bool a04br3_pmu_qualification_available(unsigned);
 extern "C" bool a04br3_pmu_lease_acquire(unsigned, uint64_t *);
 extern "C" bool a04br3_pmu_lease_valid(unsigned, uint64_t);
@@ -76,6 +83,10 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
     if (current_processor()==target && (mpidr & 0xffffffULL)==cpu && ml_get_interrupts_enabled() && armcpu_timer_probe(regs,0).status==1)
       armcpu_runtime_window_begin(regs,lease,cpu,generation,w);
     else {w.status=10;w.cleanup=ArmCpuCleanupUntouched;}
+#if ARMCPU_RUNTIME_ACTIVE
+    bool activeStarted=false; uint64_t activeCycles=0,activeMin=0,activeMax=0,epochEnd=UINT64_MAX; unsigned activeIntervals=0;
+    if (w.started && !w.status) {bool irq=ml_set_interrupts_enabled(false);activeStarted=unixnu_pmuv3_active_start(cpu,generation);ml_set_interrupts_enabled(irq);}
+#endif
     enable_preemption();
     bool recoveryStayed=true;
     if (w.started && w.status!=11) {
@@ -84,8 +95,36 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
       IOSleep(2);
       recoveryStayed=a04br3_runtime_recovery_recheck();
       disable_preemption();
+#if ARMCPU_RUNTIME_ACTIVE
+      bool activeOk=false;
+      if (activeStarted && ml_get_interrupts_enabled() && current_processor()==target) {
+        bool irq=ml_set_interrupts_enabled(false);
+        epochEnd=unixnu_idle_epoch_current(cpu);
+        activeOk=unixnu_pmuv3_active_stop(cpu,generation,&activeCycles,&activeMin,&activeMax,&activeIntervals);
+        ml_set_interrupts_enabled(irq);
+      }
+#endif
+#if ARMCPU_RUNTIME_ACTIVE
+      if (!activeStarted || !activeOk) {w.status=11;result.status=11;}
+      else
+#endif
       if (ml_get_interrupts_enabled()) result=armcpu_runtime_window_end(regs,lease,w);
       else {w.status=11;result.status=11;}
+#if ARMCPU_RUNTIME_ACTIVE
+      // Only override the whole-window idle rejection after the hardware has
+      // been restored and every idle epoch has a matching pair of boundaries.
+      if (activeStarted && activeOk && (result.status==0 || result.status==13) && w.cleanup==ArmCpuCleanupRestored &&
+          epochEnd!=UINT64_MAX && !(epochEnd&1) && epochEnd>=w.idleEpoch && activeIntervals &&
+          epochEnd-w.idleEpoch==2ULL*(activeIntervals-1) && activeMin && activeMax) {
+        __uint128_t product=(__uint128_t)activeCycles*result.frequency;
+        __uint128_t high=product/activeMin+(product%activeMin!=0);
+        if (high<=UINT64_MAX) {
+          result.cycles=activeCycles;result.bounds.lowerHz=(uint64_t)(product/activeMax);
+          result.bounds.upperHz=(uint64_t)high;result.bounds.minTicks=activeMin;result.bounds.maxTicks=activeMax;
+          result.bounds.valid=true;result.status=0;
+        } else {result.status=9;result.cycles=0;result.bounds=ArmCpuCycleBounds{};}
+      } else if (result.status==0) {result.status=13;result.cycles=0;result.bounds=ArmCpuCycleBounds{};}
+#endif
       enable_preemption();
     } else result.status=w.status;
     // IOSleep and rescheduling are not deadline guarantees. Refuse a window
@@ -101,7 +140,13 @@ static void armcpu_runtime_window_worker(void *, wait_result_t)
     thread_bind(previous);armcpu_runtime_hotplug_unlock();
     if (!safe) { if (!result.status) result.status=15; result.cycles=0; result.bounds=ArmCpuCycleBounds{}; }
     if (ml_get_interrupts_enabled()) {
-      IOLog("ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u cleanup=%u recovery=%u lease_released=%u gate_released=%u quarantine=%u cntfrq=%llu cycles=%llu low_hz=%llu high_hz=%llu idle=excluded irq=included\n",cpu,mpidr,result.status,static_cast<unsigned>(w.cleanup),static_cast<unsigned>(recoveryStayed),static_cast<unsigned>(leaseReleased),static_cast<unsigned>(gateReleased),static_cast<unsigned>(!safe),result.frequency,result.cycles,result.bounds.lowerHz,result.bounds.upperHz);
+      IOLog("ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u cleanup=%u recovery=%u lease_released=%u gate_released=%u quarantine=%u cntfrq=%llu cycles=%llu min_ticks=%llu max_ticks=%llu intervals=%u low_hz=%llu high_hz=%llu idle=excluded irq=included ownership=experimental-unverified timer=uncalibrated\n",cpu,mpidr,result.status,static_cast<unsigned>(w.cleanup),static_cast<unsigned>(recoveryStayed),static_cast<unsigned>(leaseReleased),static_cast<unsigned>(gateReleased),static_cast<unsigned>(!safe),result.frequency,result.cycles,result.bounds.minTicks,result.bounds.maxTicks,
+#if ARMCPU_RUNTIME_ACTIVE
+            activeIntervals,
+#else
+            0U,
+#endif
+            result.bounds.lowerHz,result.bounds.upperHz);
     }
     if (!safe) break;
   }

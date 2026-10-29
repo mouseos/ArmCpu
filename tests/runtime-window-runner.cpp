@@ -66,12 +66,21 @@ static bool a04br3_pmu_lease_valid(unsigned cpu,uint64_t token){return leaseActi
 static bool a04br3_pmu_lease_release(unsigned cpu,uint64_t token){if(leaseReleaseFailure||!a04br3_pmu_lease_valid(cpu,token))return false;leaseActive=false;return true;}
 static bool a04br3_runtime_probe_end_checked(){if(gateReleaseFailure||leaseActive||!a04br3_runtime_probe_active)return false;a04br3_runtime_probe_end();return true;}
 static uint64_t unixnu_idle_epoch_current(unsigned cpu){assert(!preempt);return current==&cpus[cpu]?testEpoch:UINT64_MAX;}
+#if ARMCPU_RUNTIME_ACTIVE
+static bool fakeActiveStart=true, fakeActiveStop=true;
+static bool unixnu_pmuv3_active_start(unsigned cpu, uint64_t gen){assert(!irq && !preempt && current==&cpus[cpu] && gen);return fakeActiveStart;}
+static bool unixnu_pmuv3_active_stop(unsigned cpu,uint64_t gen,uint64_t *cy,uint64_t *mi,uint64_t *ma,unsigned *n){assert(!irq && !preempt && current==&cpus[cpu] && gen);*cy=2000000;*mi=26000;*ma=26200;*n=triggerIdle?2:1;return fakeActiveStop;}
+#endif
 #include "../RuntimeCycleRunner.h"
 #include "../RuntimeWindowRunner.h"
 int main(){
  armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&bound==nullptr&&control==8&&counter==77&&terminations==1&&loggedCpu==3&&loggedStatus==0);
  samples=logs=terminations=bindCount=gateBegins=pmuReads=0;leaseQualified=false;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&bindCount==0&&gateBegins==0&&pmuReads==0&&!leaseActive&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&terminations==1);
- leaseQualified=true;samples=logs=terminations=bindCount=0;triggerIdle=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!leaseActive&&terminations==1&&loggedStatus==13);
+ leaseQualified=true;samples=logs=terminations=bindCount=0;triggerIdle=true;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!running&&!armcpu_window_poison&&!a04br3_runtime_probe_active&&!leaseActive&&terminations==1&&loggedStatus==(ARMCPU_RUNTIME_ACTIVE?0U:13U));
+#if ARMCPU_RUNTIME_ACTIVE
+ triggerIdle=false;fakeActiveStart=false;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&loggedStatus==11&&armcpu_window_poison&&a04br3_runtime_probe_active);armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;running=false;control=8;counter=77;fakeActiveStart=true;
+ fakeActiveStop=false;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&loggedStatus==11&&armcpu_window_poison&&a04br3_runtime_probe_active);armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;running=false;control=8;counter=77;fakeActiveStop=true;
+#endif
  triggerIdle=false;longSleep=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==4&&!armcpu_window_poison&&loggedStatus==16);longSleep=false;
  lateBind=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==0&&!armcpu_window_poison&&!a04br3_runtime_probe_active);lateBind=false;
  leaseReleaseFailure=true;samples=logs=terminations=bindCount=0;armcpu_runtime_window_worker(nullptr,0);assert(samples==1&&armcpu_window_poison&&a04br3_runtime_probe_active&&leaseActive&&loggedStatus==15);leaseReleaseFailure=false;armcpu_window_poison=0;a04br3_runtime_probe_active=0;leaseActive=false;
