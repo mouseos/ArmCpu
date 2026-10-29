@@ -132,3 +132,17 @@ readback or past R8 result is not a PMU lease. The worker includes IRQ time and
 rejects intervals with any machine-idle transition. If recovery or release is
 not confirmed, it retains the gate and permanently quarantines further window
 probes for the boot; successful recovery is not guaranteed.
+
+
+### Repeated experimental active windows
+
+`arw=1` retains the single pass; `arw=2` explicitly requests 120 passes,
+with a 5 second sleep between passes and a 10 ms scheduled observation per CPU.
+The existing 50 ms deadline and quarantine rules still apply. Each pass releases
+the PMU lease, watchdog gate and hotplug lock before sleeping. A poisoned window
+stops subsequent passes. `runtime-attempt` identifies round and CPU, and a
+successful `runtime-time` reports CNTVCT bounds and CNTFRQ for the following
+`runtime-window` record. The CPUs are sampled sequentially, not simultaneously;
+these are active-interval averages, excluding machine idle and idle IRQ handling.
+The timer remains uncalibrated and higher EL/debug PMU ownership unverified.
+This is an experimental opt-in, not a hardware watchdog recovery guarantee.
