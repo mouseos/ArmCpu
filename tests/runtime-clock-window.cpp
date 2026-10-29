@@ -3,12 +3,12 @@
 #include <cstdio>
 struct Lease {bool held=true,gate=true;unsigned calls=0,loseAt=0;bool watchdogHeld(){return gate;} bool valid(unsigned cpu,uint64_t gen){++calls;return held&&calls!=loseAt&&cpu==0&&gen==7;}};
 struct Regs {
- unsigned cpuId=0, pmuReads=0, writes=0;bool lateOverflow=false,ignoreRestore=false; uint64_t idle=0, now=100, value=123, control=8, enable=0, filt=0, intr=0, ov=0, freq=13000000;
+ unsigned cpuId=0, pmuReads=0, writes=0;bool lateOverflow=false,ignoreRestore=false,ignoreDisable=false,ignoreControl=false;unsigned restoreFault=0; uint64_t idle=0, now=100, value=123, control=8, enable=0, filt=0, intr=0, ov=0, freq=13000000;
  unsigned cpu(){return cpuId;} uint64_t idleEpoch(){return idle;} uint64_t id(){return 1ULL<<8;} uint64_t frequency(){return freq;}
  uint64_t pmcr(){++pmuReads;return control;} uint64_t enabled(){++pmuReads;return enable;} uint64_t filter(){++pmuReads;return filt;}
  uint64_t interrupts(){++pmuReads;return intr;} uint64_t overflow(){++pmuReads;return ov;} uint64_t cycle(){++pmuReads;return value;}
- uint64_t time(){return now++;} void set_cycle(uint64_t x){++writes;if(!(ignoreRestore && x==123))value=x;} void set_pmcr(uint64_t x){++writes;control=x;}
- void enable_cycle(){++writes;enable=1ULL<<31;}void disable_cycle(){++writes;enable=0;if(lateOverflow)ov|=1;}void clear_overflow(uint64_t x){++writes;ov&=~x;}void barrier(){}
+ uint64_t time(){return now++;} void set_cycle(uint64_t x){++writes;if(!(ignoreRestore && x==123))value=x;if(x==123){if(restoreFault==1)filt=1;if(restoreFault==2)intr=1;if(restoreFault==3)ov=1;}} void set_pmcr(uint64_t x){++writes;if(!(ignoreControl&&x==8))control=x;}
+ void enable_cycle(){++writes;enable=1ULL<<31;}void disable_cycle(){++writes;if(!ignoreDisable)enable=0;if(lateOverflow)ov|=1;}void clear_overflow(uint64_t x){++writes;ov&=~x;}void barrier(){}
 };
 struct FaultRegs : Regs { void set_pmcr(uint64_t){throw 42;} };
 int main(){
@@ -28,6 +28,7 @@ int main(){
  Regs freq;w=armcpu_runtime_window_begin(freq,l,0,7);freq.freq=26000000;freq.now+=129;freq.value=10000;x=armcpu_runtime_window_end(freq,l,w);assert(x.status==9&&!x.bounds.valid&&!w.started&&freq.value==123&&freq.control==8&&freq.enable==0);
  Regs late;w=armcpu_runtime_window_begin(late,l,0,7);late.lateOverflow=true;late.now+=129;late.value=10000;x=armcpu_runtime_window_end(late,l,w);assert(x.status==11&&w.started&&late.control==1&&late.value==10000);before=late.writes;reads=late.pmuReads;x=armcpu_runtime_window_end(late,l,w);assert(x.status==11&&late.writes==before&&late.pmuReads==reads);
  Regs restoreFail;w=armcpu_runtime_window_begin(restoreFail,l,0,7);restoreFail.now+=129;restoreFail.value=10000;restoreFail.ignoreRestore=true;x=armcpu_runtime_window_end(restoreFail,l,w);assert(x.status==11&&w.started&&w.cleanup==ArmCpuCleanupUnknown&&restoreFail.value==10000);
+ for(unsigned kind=0;kind<5;++kind){Regs badRestore;w=armcpu_runtime_window_begin(badRestore,l,0,7);badRestore.now+=129;badRestore.value=10000;if(kind==0)badRestore.ignoreDisable=true;else if(kind==1)badRestore.ignoreControl=true;else badRestore.restoreFault=kind-1;x=armcpu_runtime_window_end(badRestore,l,w);assert(x.status==11&&!x.bounds.valid&&x.cycles==0&&w.cleanup==ArmCpuCleanupUnknown&&l.gate);before=badRestore.writes;reads=badRestore.pmuReads;x=armcpu_runtime_window_end(badRestore,l,w);assert(x.status==11&&badRestore.writes==before&&badRestore.pmuReads==reads);}
  Regs wrapped;w=armcpu_runtime_window_begin(wrapped,l,0,7);wrapped.value=10000;wrapped.now+=129;wrapped.ov=1ULL<<31;x=armcpu_runtime_window_end(wrapped,l,w);assert(x.status==7&&!wrapped.ov&&wrapped.value==123);
  puts("PASS non-busy PMU transaction, idle refusal, conflict quarantine and restore");
 }
