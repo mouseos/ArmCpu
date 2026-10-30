@@ -154,3 +154,43 @@ The hook reports board clock and load context independently; its reads and logs
 are not an atomic snapshot and instrumentation itself changes scheduling and
 load. Missing hooks and unavailable board data are recorded as such. The
 bracketing reads do not prove a register remained constant during a window.
+
+
+### CPU3 preemptible busy control (experimental, hardware gated)
+
+`XNU_ARMCPU_BUSY_CONTROL=1` passes an opt-in compile flag through the device
+builder when GICv2, the runtime window, idle epoch, active backend and XNU switch observer are
+selected. `arw=4` currently refuses on hardware before any board hook, CPU
+binding, gate or PMU access. The candidate workload is compiled when enabled
+but runs only in host simulation until the actual kernel integration, meter
+exclusion and independent review are complete. The default is unchanged.
+
+The API is weakly imported and refuses if it is absent or cannot return a
+snapshot; IOKit does not access the private XNU thread structure.
+
+The candidate keeps the existing short preemption-disabled PMU setup and
+restore sequences. Between them the bound worker runs a short timer-read loop
+with preemption and IRQ enabled. It snapshots the worker's XNU `c_switch` count
+before enabling preemption and after disabling it again. A changed counter,
+wrong CPU, idle epoch change or multiple active intervals invalidates the busy
+sample; lease loss and PMU interference retain existing quarantine behavior.
+A CPU bind followed by `thread_block` is required before PMU access. The target
+XNU's `sched_prim.c` increments `c_switch` on dispatch of a different thread;
+this is not evidence that IRQs did not run. IRQ time and instructions are
+included, and equal 32-bit counters cannot rule out an exact wrap. The timer
+loop has iteration and stall limits and rejects overly long completed windows;
+these do not guarantee a wall-clock upper bound for a descheduled worker.
+Unlike a non-preemptible busy loop, waiting to be rescheduled does not extend a
+new preemption-disabled section. PMU lease, watchdog gate and hotplug lock are
+still retained until the worker can restore state; a non-return still relies
+on existing watchdog recovery and cannot be claimed safe by host tests.
+
+The host simulation compares CPU3 normal and busy rounds with the same boot,
+separate leases, near PLL/FHCTL snapshots and explicit pair validity records.
+Skip, failure, missing near snapshots, a switched-out worker or an idle change
+invalidates the pair; a missing pair record is unknown. Context and near hooks
+do not invoke a frequency meter, but this does not exclude an independent
+meter. Board register readings cover endpoints only. Timer calibration and
+higher-EL/debug PMU ownership remain unverified. Host mocks do not prove the
+real thread ABI, code generation, scheduler, watchdog, meter exclusion, or IRQ
+behavior, so must not be treated as authorization for hardware use.

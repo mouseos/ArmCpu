@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include "RuntimeClockWindow.h"
+#ifndef ARMCPU_RUNTIME_BUSY_CONTROL
+#define ARMCPU_RUNTIME_BUSY_CONTROL 0
+#endif
 #ifndef ARMCPU_RUNTIME_ACTIVE
 #define ARMCPU_RUNTIME_ACTIVE 0
 #endif
 #ifndef ARMCPU_RUNTIME_TEST
 extern "C" uint64_t unixnu_idle_epoch_current(unsigned);
 extern "C" bool unixnu_idle_epoch_observe(int *, uint64_t *, unsigned *, uint64_t *, uint64_t *, unsigned *);
+#if ARMCPU_RUNTIME_BUSY_CONTROL && ARMCPU_RUNTIME_ACTIVE
+extern "C" bool unixnu_current_thread_switches(uint32_t *) __attribute__((weak_import));
+#endif
 #if ARMCPU_RUNTIME_ACTIVE
 extern "C" bool unixnu_pmuv3_active_start(unsigned, uint64_t);
 extern "C" bool unixnu_pmuv3_active_stop(unsigned, uint64_t, uint64_t *, uint64_t *, uint64_t *, unsigned *);
@@ -48,7 +54,17 @@ struct ArmCpuWindowRegisters : ArmCpuCycleRegisters {
 static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
 {
   const bool repeat = parameter != nullptr;
-  const bool context = parameter == reinterpret_cast<void *>(2);
+  const bool compare = ARMCPU_RUNTIME_BUSY_CONTROL && ARMCPU_RUNTIME_ACTIVE && parameter == reinterpret_cast<void *>(3);
+  const bool context = parameter == reinterpret_cast<void *>(2) || compare;
+#if !defined(ARMCPU_RUNTIME_TEST) || !defined(ARMCPU_RUNTIME_BUSY_HOST_SIM)
+  // Host-only until scheduler evidence, meter exclusion and integration have
+  // passed independent review on the pinned kernel build.
+  if (compare) {
+    if (ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-compare unavailable=review-and-meter-exclusion-unverified\n");
+    thread_terminate(current_thread());
+    return;
+  }
+#endif
   const unsigned rounds = repeat ? ARMCPU_RUNTIME_REPEAT_ROUNDS : 1U;
   IOSleep(5000);
 #if ARMCPU_RUNTIME_ACTIVE
@@ -61,13 +77,20 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
   if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE) && ml_get_interrupts_enabled())
     IOLog("ArmCpu: runtime-window unavailable=recovery-not-ready\n");
   unsigned completedRounds=0;
+  bool pairOpen=false, pairNormal=false, pairBusy=false; unsigned pairId=0;
   for (unsigned round=0;round<rounds;++round) {
   if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE) || !ml_get_interrupts_enabled()) break;
+  if (compare && !(round & 1U)) {
+    if (pairOpen) IOLog("ArmCpu: runtime-pair pair=%u normal=%u busy=%u valid=%u\n",pairId,static_cast<unsigned>(pairNormal),static_cast<unsigned>(pairBusy),static_cast<unsigned>(pairNormal && pairBusy));
+    pairOpen=true;pairId=round/2;pairNormal=false;pairBusy=false;
+  }
   if (round) IOSleep(ARMCPU_RUNTIME_REPEAT_DELAY_MS);
-  for(unsigned cpu=0;cpu<4;++cpu) {
+  for(unsigned cpu=compare ? 3U : 0U;cpu<4;++cpu) {
+    const bool busy = compare && (round & 1U);
     if (__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE)) break;
     if (!ml_get_interrupts_enabled()) break;
     if (repeat) IOLog("ArmCpu: runtime-attempt round=%u cpu=%u\n",round,cpu);
+    if (compare) IOLog("ArmCpu: runtime-compare-attempt pair=%u round=%u mode=%s\n",round/2,round,busy ? "busy" : "normal");
     if (!__atomic_load_n(&a04br3_runtime_recovery_ready,__ATOMIC_ACQUIRE)) {if (repeat) IOLog("ArmCpu: runtime-skip cpu=%u reason=recovery-not-ready\n",cpu);continue;}
     // Advisory preflight only: acquisition must recheck qualification.
     if (!a04br3_pmu_qualification_available(cpu)) {IOLog("ArmCpu: runtime-window cpu=%u unavailable=pmu-unqualified\n",cpu);continue;}
@@ -121,14 +144,37 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (context && activeStarted && ml_get_interrupts_enabled() && a04br3_cpu_clock_near_v2)
       nearOk[0]=a04br3_cpu_clock_near_v2(nearClock[0]);
 #endif
+    bool busyReached=false, busyBadTime=false;
+    uint32_t switchesBefore=0,switchesAfter=0; bool switchesStartOk=false,switchesEndOk=false;
+#if ARMCPU_RUNTIME_BUSY_CONTROL && ARMCPU_RUNTIME_ACTIVE
+    if (busy && unixnu_current_thread_switches) switchesStartOk=unixnu_current_thread_switches(&switchesBefore);
+#endif
+    // The busy workload is preemptible. PMU setup and restore remain in the
+    // existing short non-preemptible regions; a switch invalidates the sample.
     enable_preemption();
+#if ARMCPU_RUNTIME_BUSY_CONTROL && ARMCPU_RUNTIME_ACTIVE
+    if (busy && switchesStartOk && w.started && !w.status) {
+      // The loop performs only timer reads; it must not touch PMU state.
+      const uint64_t start=regs.time(); uint64_t last=start; unsigned unchanged=0;
+      const uint64_t target=w.frequency/10000; // nominal 100 us
+      for (unsigned n=0; n<4096 && unchanged<256; ++n) {
+        uint64_t t=regs.time();
+        if (t-last>UINT64_MAX/2) {busyBadTime=true;break;}
+        unchanged=t==last ? unchanged+1 : 0; last=t;
+        if (t-start>=target) {busyReached=true;break;}
+      }
+    }
+#endif
     bool recoveryStayed=true;
     if (w.started && w.status!=11) {
       // Other runnable threads can execute; the epoch rejects intervals that
       // enter machine_idle. This is not a tight synthetic busy loop.
-      IOSleep(repeat ? 10 : 2);
+      if (!busy) IOSleep(repeat ? 10 : 2);
       recoveryStayed=a04br3_runtime_recovery_recheck();
       disable_preemption();
+#if ARMCPU_RUNTIME_BUSY_CONTROL && ARMCPU_RUNTIME_ACTIVE
+      if (busy && unixnu_current_thread_switches) switchesEndOk=unixnu_current_thread_switches(&switchesAfter);
+#endif
 #if ARMCPU_RUNTIME_ACTIVE
       bool activeOk=false;
       if (activeStarted && ml_get_interrupts_enabled() && current_processor()==target) {
@@ -163,6 +209,15 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
 #endif
       enable_preemption();
     } else result.status=w.status;
+    if (busy && !result.status && (!switchesStartOk || !switchesEndOk || switchesBefore!=switchesAfter ||
+#if ARMCPU_RUNTIME_ACTIVE
+        epochEnd!=w.idleEpoch || activeIntervals!=1 ||
+#endif
+        false)) {result.status=17;result.cycles=0;result.bounds=ArmCpuCycleBounds{};}
+    if (busy && !result.status && (!busyReached || busyBadTime || !result.frequency ||
+        result.endAfter-result.beginBefore > result.frequency/2000)) {
+      result.status=16;result.cycles=0;result.bounds=ArmCpuCycleBounds{};
+    }
     // IOSleep and rescheduling are not deadline guarantees. Refuse a window
     // longer than 50 ms after restoration rather than reporting stale data.
     if (!result.status && result.frequency && result.endAfter-result.beginBefore > result.frequency/20) {
@@ -182,7 +237,14 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
     if (!safe) { if (!result.status) result.status=15; result.cycles=0; result.bounds=ArmCpuCycleBounds{}; }
     if (ml_get_interrupts_enabled()) {
       if (result.status==13 && w.cleanup==ArmCpuCleanupUntouched) IOLog("ArmCpu: runtime-idle cpu=%u epoch=%llx actual=%d raw=%llx seen=%u reason=%u old=%llx cmp=%llx enter=%u\n",cpu,w.idleEpoch,idleActual,idleRaw,static_cast<unsigned>(idleObserved),idleReason,idleOld,idleSeen,idleEntry);
-      if (repeat && result.status==0) IOLog("ArmCpu: runtime-time round=%u cpu=%u begin=%llu end=%llu timer_hz=%llu\n",round,cpu,result.beginBefore,result.endAfter,result.frequency);
+      if (compare) {
+#if ARMCPU_RUNTIME_ACTIVE
+        const bool valid=result.status==0 && safe && nearOk[0] && nearOk[1];
+        if (busy) pairBusy=valid; else pairNormal=valid;
+#endif
+        IOLog("ArmCpu: runtime-compare pair=%u round=%u cpu=%u mode=%s status=%u begin=%llu end=%llu timer_hz=%llu timer=uncalibrated owner=unverified irq=enabled\n",round/2,round,cpu,busy ? "busy" : "normal",result.status,result.beginBefore,result.endAfter,result.frequency);
+      }
+      if (repeat && !compare && result.status==0) IOLog("ArmCpu: runtime-time round=%u cpu=%u begin=%llu end=%llu timer_hz=%llu\n",round,cpu,result.beginBefore,result.endAfter,result.frequency);
       IOLog("ArmCpu: runtime-window cpu=%u mpidr=%llx status=%u cleanup=%u recovery=%u lease_released=%u gate_released=%u quarantine=%u cntfrq=%llu cycles=%llu min_ticks=%llu max_ticks=%llu intervals=%u low_hz=%llu high_hz=%llu\n",cpu,mpidr,result.status,static_cast<unsigned>(w.cleanup),static_cast<unsigned>(recoveryStayed),static_cast<unsigned>(leaseReleased),static_cast<unsigned>(gateReleased),static_cast<unsigned>(!safe),result.frequency,result.cycles,result.bounds.minTicks,result.bounds.maxTicks,
 #if ARMCPU_RUNTIME_ACTIVE
             activeIntervals,
@@ -195,6 +257,7 @@ static void armcpu_runtime_window_worker(void *parameter, wait_result_t)
   }
   if (!__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE) && ml_get_interrupts_enabled()) ++completedRounds;
   }
+  if (compare && pairOpen && ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-pair pair=%u normal=%u busy=%u valid=%u\n",pairId,static_cast<unsigned>(pairNormal),static_cast<unsigned>(pairBusy),static_cast<unsigned>(pairNormal && pairBusy));
   if (repeat && ml_get_interrupts_enabled()) IOLog("ArmCpu: runtime-finished rounds=%u reason=%s\n",completedRounds,__atomic_load_n(&armcpu_window_poison,__ATOMIC_ACQUIRE) ? "quarantine" : "complete");
   thread_terminate(current_thread());
 }
