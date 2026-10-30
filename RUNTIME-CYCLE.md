@@ -194,3 +194,14 @@ meter. Board register readings cover endpoints only. Timer calibration and
 higher-EL/debug PMU ownership remain unverified. Host mocks do not prove the
 real thread ABI, code generation, scheduler, watchdog, meter exclusion, or IRQ
 behavior, so must not be treated as authorization for hardware use.
+
+### Switch observer compile/link evidence
+
+`ARMCPU_SWITCH_ABI_PROBE=1` adds a local, retained, noinline function that
+references the real weak-import observer. It has no caller and is never used
+by the worker, boot arguments, PMU code, or any runtime dispatch table. The
+function is strictly an ABI/link verification target and does not authorize
+or perform a measurement. The default remains off. Actual kernel symbol and
+relocation analysis must verify retention for the specific toolchain and link;
+`used` is not a substitute for that evidence. The observer's ABI and any
+measurement path still require independent review and hardware qualification.

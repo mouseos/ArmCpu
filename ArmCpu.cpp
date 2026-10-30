@@ -11,6 +11,7 @@
 #include "CycleClock.h"
 #include "StartupCycleGuard.h"
 #include "RuntimeCyclePolicy.h"
+#include "SwitchObserverAbiProbe.h"
 #ifndef ARMCPU_RUNTIME_BUSY_CONTROL
 #define ARMCPU_RUNTIME_BUSY_CONTROL 0
 #endif
